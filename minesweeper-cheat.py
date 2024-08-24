@@ -38,32 +38,59 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
+def get_gray_mask(img: Img, threshold: int = 10) -> Img:
+    red_blue_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 0].astype(np.int16))
+    red_green_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 1].astype(np.int16))
+    blue_green_diff = np.abs(img[:, :, 0].astype(np.int16) - img[:, :, 1].astype(np.int16))
+    return (red_blue_diff < threshold) & (red_green_diff < threshold) & (blue_green_diff < threshold)
+
+
 def detect_tiles(img: Img) -> tp.List[Rect]:
-    MIN_WIDTH_HEIGHT_RATIO = 0.9
-    MAX_WIDTH_HEIGHT_RATIO = 1.1
-    MIN_WIDTH = 10
+    mask = get_gray_mask(img).astype(np.uint8) * 255
+    img = cv.cvtColor(cv.bitwise_and(img, img, mask=mask), cv.COLOR_BGR2GRAY)
+    debug_img = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
 
-    # edges = cv.Canny(img, 0, 0)
-    # cv.imshow('Edges', edges)
-    # cv.waitKey(0)
+    lighter_than_left = img[:, 1:] > img[:, :-1]
+    same_as_up = img[1:, :] == img[:-1, :]
+    vertical_mask = lighter_than_left[1:, :] & same_as_up[:, 1:]
+    vertical_lines = cv.HoughLines(vertical_mask.astype(np.uint8), 1, np.pi / 2, 100)
+    vertical_lines_x = []
+    for line in vertical_lines:
+        rho, theta = line[0]
+        a, b = np.cos(theta), np.sin(theta)
+        x0, y0 = a * rho, b * rho
+        x1, y1 = int(x0 + 1000 * (-b)), int(y0 + 1000 * a)
+        x2, y2 = int(x0 - 1000 * (-b)), int(y0 - 1000 * a)
+        cv.line(debug_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-    horizontal_kernel = np.array([[1, 1, 1], [0, 0, 0], [-1, -1, -1]])
-    vertical_kernel = np.array([[1, 0, -1], [1, 0, -1], [1, 0, -1]])
-    horizontal_edges = cv.filter2D(img, -1, horizontal_kernel)
-    vertical_edges = cv.filter2D(img, -1, vertical_kernel)
-    edges = cv.addWeighted(horizontal_edges, 0.5, vertical_edges, 0.5, 0)
-    cv.imshow('Edges', edges)
+        vertical_lines_x.append(rho)
+
+    lighter_than_up = img[1:, :] > img[:-1, :]
+    same_as_left = img[:, 1:] == img[:, :-1]
+    horizontal_mask = lighter_than_up[:, 1:] & same_as_left[1:, :]
+    horizontal_lines = cv.HoughLines(horizontal_mask.astype(np.uint8), 1, np.pi / 2, 100)
+    horizontal_lines_y = []
+    for line in horizontal_lines:
+        rho, theta = line[0]
+        a, b = np.cos(theta), np.sin(theta)
+        x0, y0 = a * rho, b * rho
+        x1, y1 = int(x0 + 1000 * (-b)), int(y0 + 1000 * a)
+        x2, y2 = int(x0 - 1000 * (-b)), int(y0 - 1000 * a)
+        cv.line(debug_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+        horizontal_lines_y.append(rho)
+
+    for x in vertical_lines_x:
+        cv.line(debug_img, (int(x), 0), (int(x), img.shape[0]), (0, 0, 255), 1)
+    for y in horizontal_lines_y:
+        cv.line(debug_img, (0, int(y)), (img.shape[1], int(y)), (0, 0, 255), 1)
+
+    tile_mask = vertical_mask | horizontal_mask
+    cv.imshow('Tile mask', tile_mask.astype(np.uint8) * 255)
     cv.waitKey(0)
-    # lines = cv.HoughLinesP(edges, 1, np.pi / 2, 20, minLineLength=10, maxLineGap=10)
-    # for line in lines:
-    #     cv.line(img, (line[0][0], line[0][1]), (line[0][2], line[0][3]), (0, 255, 0), 2)
+    cv.imshow('Debug', debug_img)
+    cv.waitKey(0)
 
-    # contours, _ = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    # for cnt in contours:
-    #     left, top, width, height = cv.boundingRect(cnt)
-    #     if width > MIN_WIDTH and MIN_WIDTH_HEIGHT_RATIO < width / height < MAX_WIDTH_HEIGHT_RATIO:
-    #         cv.rectangle(img, (left, top), (left + width, top + height), (255, 0, 0), 2)
-    
     return []
 
 
@@ -117,12 +144,6 @@ class Minesweeper:
         # selected_screen_part = screen[top:bottom, left:right]
         # self.minefield_rect = find_minefield(selected_screen_part)
 
-    def get_gray_mask(self, img: Img, threshold: int = 10) -> Img:
-        red_blue_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 0].astype(np.int16))
-        red_green_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 1].astype(np.int16))
-        blue_green_diff = np.abs(img[:, :, 0].astype(np.int16) - img[:, :, 1].astype(np.int16))
-        return (red_blue_diff < threshold) & (red_green_diff < threshold) & (blue_green_diff < threshold)
-
     def main_loop(self):
         target_delta_time = 1e9 / MAX_FPS
         prev_time = time_ns()
@@ -146,9 +167,9 @@ class Minesweeper:
             cv.rectangle(screen, self.minefield_rect[0], self.minefield_rect[1], (0, 255, 0), 2)
 
             # Show the screen
-            mask = self.get_gray_mask(screen).astype(np.uint8) * 255
-            screen = cv.bitwise_and(screen, screen, mask=mask)
             detect_tiles(screen)
+            mask = get_gray_mask(screen).astype(np.uint8) * 255
+            screen = cv.cvtColor(cv.bitwise_and(screen, screen, mask=mask), cv.COLOR_BGR2GRAY)
             cv.imshow(WINDOW_NAME, screen)
 
             # Limit the frame rate
