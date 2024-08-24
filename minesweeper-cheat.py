@@ -3,6 +3,7 @@ import numpy as np
 import pyautogui
 import typing as tp
 from time import time_ns
+from scipy.stats import mode # type: ignore
 
 
 ###################################################################
@@ -38,34 +39,48 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
-def get_gray_mask(img: Img, threshold: int = 10) -> Img:
+def get_main_color(img: Img, remove_black: bool) -> tp.Tuple[int, ...]:
+    # if remove_black:
+        # raise NotImplementedError('remove_black is not implemented yet')
+    print(mode(img.reshape(-1, 3), keepdims=False)[0])
+    return tuple(mode(img.reshape(-1, 3), keepdims=False)[0])
+
+
+def remove_non_gray(img: Img, threshold: int = 10) -> Img:
     red_blue_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 0].astype(np.int16))
     red_green_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 1].astype(np.int16))
     blue_green_diff = np.abs(img[:, :, 0].astype(np.int16) - img[:, :, 1].astype(np.int16))
-    return ((red_blue_diff < threshold)
+    mask = ((red_blue_diff < threshold)
             & (red_green_diff < threshold)
             & (blue_green_diff < threshold))
+    # // EROSION_SIZE = 3
+    # // mask = cv.erode(mask.astype(np.uint8), np.ones((EROSION_SIZE, EROSION_SIZE), np.uint8))
+
+    main_color = get_main_color(img, remove_black=True)
+    img[mask] = main_color
+    return img
 
 
 def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
-    mask = get_gray_mask(img).astype(np.uint8) * 255
+    img = remove_non_gray(img)
     img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     # // img = cv.cvtColor(cv.bitwise_and(img, img, mask=mask), cv.COLOR_BGR2GRAY)
-    # Set all non-masked pixels to last masked color left of them #TODO: optimize
-    for y in range(mask.shape[0]):
-        last_masked = 0
-        for x in range(mask.shape[1]):
-            if mask[y, x]:
-                last_masked = x
-            else:
-                img[y, x] = img[y, last_masked]
+    # // # Set all non-masked pixels to last masked color left of them #TODO: optimize
+    # // for y in range(mask.shape[0]):
+    # //     last_masked = 0
+    # //     for x in range(mask.shape[1]):
+    # //         if mask[y, x]:
+    # //             last_masked = x
+    # //         else:
+    # //             img[y, x] = img[y, last_masked]
     # // debug_img = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
 
     # Detect horizontal and vertical lines
+    LIGHTER_THRESHOLD = 18
     LINES_THRESHOLD = 50
 
     ## Detect vertical lines
-    lighter_than_left = img[:, 1:] > img[:, :-1]
+    lighter_than_left = (img[:, 1:] - img[:, :-1]) > LIGHTER_THRESHOLD
     same_as_up = img[1:, :] == img[:-1, :]
     vertical_mask = lighter_than_left[1:, :] & same_as_up[:, 1:]
     vertical_lines = cv.HoughLines(vertical_mask.astype(np.uint8), 1, np.pi / 2, LINES_THRESHOLD)
@@ -82,7 +97,7 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         vertical_lines_x.append(rho)
 
     ## Detect horizontal lines
-    lighter_than_up = img[1:, :] > img[:-1, :]
+    lighter_than_up = (img[1:, :] - img[:-1, :]) > LIGHTER_THRESHOLD
     same_as_left = img[:, 1:] == img[:, :-1]
     horizontal_mask = lighter_than_up[:, 1:] & same_as_left[1:, :]
     horizontal_lines = cv.HoughLines(horizontal_mask.astype(np.uint8), 1, np.pi / 2, 100)
@@ -144,8 +159,9 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     # // counts_y = np.unique(np.diff(sorted_y), return_counts=True)
     # // print(counts_x, counts_y)
     all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
-    unique_diffs, counts = np.unique(all_diffs, return_counts=True)
-    tile_size = int(unique_diffs[np.argmax(counts)])
+    # // unique_diffs, counts = np.unique(all_diffs, return_counts=True)
+    # // tile_size = int(unique_diffs[np.argmax(counts)])
+    tile_size = int(mode(all_diffs, keepdims=False)[0])
     # // print(tile_size)
 
     # // for x in sorted_x:
@@ -242,15 +258,8 @@ class Minesweeper:
             vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
 
             # debug
-            mask = get_gray_mask(screen).astype(np.uint8) * 255
+            screen = remove_non_gray(screen)
             # Set all non-masked pixels to last masked color left of them
-            for y in range(mask.shape[0]):
-                last_masked = 0
-                for x in range(mask.shape[1]):
-                    if mask[y, x]:
-                        last_masked = x
-                    else:
-                        screen[y, x] = screen[y, last_masked]
             for x in vertical_lines:
                 cv.line(screen, (x, 0), (x, screen.shape[0]), (0, 0, 255), 1)
             for y in horizontal_lines:
