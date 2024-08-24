@@ -80,10 +80,52 @@ def detect_tiles(img: Img) -> tp.List[Rect]:
 
         horizontal_lines_y.append(rho)
 
-    for x in vertical_lines_x:
+    sorted_x = np.sort(vertical_lines_x)
+    sorted_y = np.sort(horizontal_lines_y)
+    # max_diff_y = int(np.max(np.diff(sorted_y)))
+    # median_diff_x = int(np.median(np.diff(sorted_x)))
+    # median_diff_y = int(np.median(np.diff(sorted_y)))
+    # print(max_diff_x, max_diff_y)
+    # print(median_diff_x, median_diff_y)
+
+    # merge lines that are close to each other into their average
+    MIN_REL_DIFF = 0.6
+    CLOSE_MERGE_REPETITIONS = 3
+    for _ in range(CLOSE_MERGE_REPETITIONS):
+        max_diff_x = int(np.max(np.diff(sorted_x)))
+        mask_x = np.diff(sorted_x, prepend=sorted_x[0]) < MIN_REL_DIFF * max_diff_x
+        mask_y = np.diff(sorted_y, prepend=sorted_y[0]) < MIN_REL_DIFF * max_diff_x
+
+        close_x_indices = np.flatnonzero(mask_x)
+        print(close_x_indices)
+        first_close_x = close_x_indices[0]
+        prev_close_x = close_x_indices[0]
+        for i in close_x_indices:
+            if i - prev_close_x > 1:
+                sorted_x[first_close_x : prev_close_x + 1] \
+                    = np.mean(sorted_x[first_close_x : prev_close_x + 1])
+                first_close_x = i
+            prev_close_x = i
+        sorted_x = np.unique(sorted_x)
+
+        close_y_indices = np.flatnonzero(mask_y)
+        first_close_y = close_y_indices[0]
+        prev_close_y = close_y_indices[0]
+        for i in close_y_indices:
+            if i - prev_close_y > 1:
+                sorted_y[first_close_y : prev_close_y + 1] \
+                    = np.mean(sorted_y[first_close_y : prev_close_y + 1])
+                first_close_y = i
+            prev_close_y = i
+        sorted_y = np.unique(sorted_y)
+
+    for x in sorted_x:
         cv.line(debug_img, (int(x), 0), (int(x), img.shape[0]), (0, 0, 255), 1)
-    for y in horizontal_lines_y:
+    for y in sorted_y:
         cv.line(debug_img, (0, int(y)), (img.shape[1], int(y)), (0, 0, 255), 1)
+
+    # cv.rectangle(debug_img, (0, 0), (max_diff_x, max_diff_y), (255, 255, 0), 3)
+    # cv.rectangle(debug_img, (0, 0), (median_diff_x, median_diff_y), (255, 255, 0), 3)
 
     tile_mask = vertical_mask | horizontal_mask
     cv.imshow('Tile mask', tile_mask.astype(np.uint8) * 255)
