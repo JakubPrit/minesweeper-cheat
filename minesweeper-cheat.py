@@ -43,15 +43,27 @@ def detect_tiles(img: Img) -> tp.List[Rect]:
     MAX_WIDTH_HEIGHT_RATIO = 1.1
     MIN_WIDTH = 10
 
-    edges = cv.Canny(img, 0, 10)
+    # edges = cv.Canny(img, 0, 0)
+    # cv.imshow('Edges', edges)
+    # cv.waitKey(0)
+
+    horizontal_kernel = np.array([[1, 1, 1], [0, 0, 0], [-1, -1, -1]])
+    vertical_kernel = np.array([[1, 0, -1], [1, 0, -1], [1, 0, -1]])
+    horizontal_edges = cv.filter2D(img, -1, horizontal_kernel)
+    vertical_edges = cv.filter2D(img, -1, vertical_kernel)
+    edges = cv.addWeighted(horizontal_edges, 0.5, vertical_edges, 0.5, 0)
     cv.imshow('Edges', edges)
     cv.waitKey(0)
-    contours, _ = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    # lines = cv.HoughLinesP(edges, 1, np.pi / 2, 20, minLineLength=10, maxLineGap=10)
+    # for line in lines:
+    #     cv.line(img, (line[0][0], line[0][1]), (line[0][2], line[0][3]), (0, 255, 0), 2)
 
-    for cnt in contours:
-        left, top, width, height = cv.boundingRect(cnt)
-        if width > MIN_WIDTH and MIN_WIDTH_HEIGHT_RATIO < width / height < MAX_WIDTH_HEIGHT_RATIO:
-            cv.rectangle(img, (left, top), (left + width, top + height), (255, 0, 0), 2)
+    # contours, _ = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    # for cnt in contours:
+    #     left, top, width, height = cv.boundingRect(cnt)
+    #     if width > MIN_WIDTH and MIN_WIDTH_HEIGHT_RATIO < width / height < MAX_WIDTH_HEIGHT_RATIO:
+    #         cv.rectangle(img, (left, top), (left + width, top + height), (255, 0, 0), 2)
+    
     return []
 
 
