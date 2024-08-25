@@ -130,6 +130,19 @@ def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
 
 
 def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
+    """ Detect the tiles in the minefield by detecting the vertical and horizontal edges
+        of the tiles. See the detect_edges function for more information on the edge detection
+        algorithm. The edges are then processed and filtered by size and distance to find the
+        grid of the tiles.
+
+    Args:
+        img (Img): The image to detect the tiles in.
+
+    Returns:
+        tp.Tuple[tp.List[int], tp.List[int], int]: The x-coordinates of the vertical edges,
+            the y-coordinates of the horizontal edges and the size of the tiles.
+    """
+
     img = extract_gray(img)
 
     vertical_mask = detect_edges(img, vertical=True, iterations=2)
@@ -148,80 +161,60 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
 
+    MIN_REL_SIZE = 0.8
+    MAX_REL_SIZE = 1.2
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
-    edges_x = []
-    edges_y = []
+    edges_x, edges_y = [], []
+    sizes = []
+    for cnt in cnts:
+        x, y, w, h = cv.boundingRect(cnt)
+        if w > 1 and h > 1:
+            continue
+        if w > 1: sizes.append(w)
+        if h > 1: sizes.append(h)
+    median_size = np.median(sizes)
+    min_size = median_size * MIN_REL_SIZE
+    max_size = median_size * MAX_REL_SIZE
+    for cnt in cnts:
+        x, y, w, h = cv.boundingRect(cnt)
+        if w > 1 and h > 1:
+            continue
+        if min_size <= w <= max_size:
+            edges_x.append(x)
+        if min_size <= h <= max_size:
+            edges_y.append(y)
 
-    # // LINES_THRESHOLD = 100
+    sorted_x = np.unique(edges_x)
+    sorted_y = np.unique(edges_y)
+    if len(sorted_x) < 2 or len(sorted_y) < 2:
+        return [], [], -1 # Not enough edges found
 
-    # // lines = cv.HoughLines(edges.astype(np.uint8), 1, np.pi / 2, LINES_THRESHOLD)
-    # // vertical_lines_x = []
-    # // horizontal_lines_y = []
-    # // if lines is None:
-    # //     print('No lines detected') # Debug
-    # //     return [], [], -1 # Nothing detected
-    # // for line in lines:
-    # //     rho, theta = line[0]
-    # //     if theta == 0:
-    # //         vertical_lines_x.append(rho)
-    # //     else:
-    # //         horizontal_lines_y.append(rho)
+    SAME_THRESHOLD = 0.2
+    CLOSE_THRESHOLD = 0.8
+    FAR_THRESHOLD = 1.7
+    sorted_x = sorted_x[np.diff(sorted_x, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
+    sorted_y = sorted_y[np.diff(sorted_y, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
+    min_size = CLOSE_THRESHOLD * median_size
+    max_size = FAR_THRESHOLD * median_size
+    while len(sorted_x) > 1 and not (min_size <= (sorted_x[-1] - sorted_x[-2]) <= max_size):
+        sorted_x = sorted_x[:-1]
+    while len(sorted_y) > 1 and not (min_size <= (sorted_y[-1] - sorted_y[-2]) <= max_size):
+        sorted_y = sorted_y[:-1]
+    while len(sorted_x) > 1 and not (min_size <= (sorted_x[1] - sorted_x[0]) <= max_size):
+        sorted_x = sorted_x[1:]
+    while len(sorted_y) > 1 and not (min_size <= (sorted_y[1] - sorted_y[0]) <= max_size):
+        sorted_y = sorted_y[1:]
+    while len(sorted_x) > 1 and sorted_x[0] < (CLOSE_THRESHOLD * median_size):
+        sorted_x = sorted_x[1:]
+    while len(sorted_y) > 1 and sorted_y[0] < (CLOSE_THRESHOLD * median_size):
+        sorted_y = sorted_y[1:]
 
-    # // # Merge lines that are close to each other into their average
-    # // MIN_REL_DIFF = 0.3
+    if len(sorted_x) < 2 or len(sorted_y) < 2:
+        return [], [], -1 # Not enough suitable edges found
 
-    # // sorted_x = np.sort(vertical_lines_x)
-    # // sorted_y = np.sort(horizontal_lines_y)
-    # // if len(sorted_x) < 2 or len(sorted_y) < 2:
-    # //     return [], [], -1 # Not enough lines to detect tiles
-    # // max_diff_x = int(np.max(np.diff(sorted_x)))
-
-    # // ## Merge close vertical lines
-    # // close_x_indices = np.flatnonzero(np.diff(sorted_x) < MIN_REL_DIFF * max_diff_x)
-    # // if len(close_x_indices):
-    # //     first_close_x = close_x_indices[0]
-    # //     prev_close_x = close_x_indices[0]
-    # //     for i in close_x_indices:
-    # //         if i - prev_close_x > 1:
-    # //             sorted_x[first_close_x : prev_close_x + 2] \
-    # //                 = np.mean(sorted_x[first_close_x : prev_close_x + 2])
-    # //             first_close_x = i
-    # //         prev_close_x = i
-    # //     sorted_x[first_close_x : prev_close_x + 2] \
-    # //         = np.mean(sorted_x[first_close_x : prev_close_x + 2])
-    # //     sorted_x = np.unique(sorted_x)
-    # //     # // print(np.diff(sorted_x))
-
-    # // ## Merge close horizontal lines
-    # // close_y_indices = np.flatnonzero(np.diff(sorted_y) < MIN_REL_DIFF * max_diff_x)
-    # // if len(close_y_indices):
-    # //     first_close_y = close_y_indices[0]
-    # //     prev_close_y = close_y_indices[0]
-    # //     for i in close_y_indices:
-    # //         if i - prev_close_y > 1:
-    # //             sorted_y[first_close_y : prev_close_y + 2] \
-    # //                 = np.mean(sorted_y[first_close_y : prev_close_y + 2])
-    # //             first_close_y = i
-    # //         prev_close_y = i
-    # //     sorted_y[first_close_y : prev_close_y + 2] \
-    # //         = np.mean(sorted_y[first_close_y : prev_close_y + 2])
-    # //     sorted_y = np.unique(sorted_y)
-    # //     # // print(np.diff(sorted_y))
-
-    # // # Calculate the tile size
-    # // all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
-    # // tile_size = int(mode(all_diffs, keepdims=False)[0])
 
     # Debug
     if cv.waitKey(1) == ord('d'):
-        # // dbg_img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-        # // for x in sorted_x:
-        # //     cv.line(dbg_img, (int(x), 0), (int(x), dbg_img.shape[0]), (0, 0, 255), 1)
-        # // for y in sorted_y:
-        # //     cv.line(dbg_img, (0, int(y)), (dbg_img.shape[1], int(y)), (0, 0, 255), 1)
-        # // cv.imshow('debug', dbg_img)
-        # // cv.waitKey(0)
-
         dbg_img = edges.astype(np.uint8) * 255
         contours = cv.findContours(dbg_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
         dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
@@ -230,18 +223,7 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         cv.waitKey(0)
         cv.destroyWindow('debug')
 
-        # // dbg_img = (vertical_mask | horizontal_mask).astype(np.uint8) * 255
-        # // #detect corners
-        # // corners = cv.goodFeaturesToTrack(dbg_img, 4, 0.01, 10)
-        # // corners = corners.astype(np.uint8)
-        # // dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
-        # // for i in corners:
-        # //     x, y = i.ravel()
-        # //     cv.circle(dbg_img, (x, y), 3, 255, -1)
-        # // cv.imshow('debug', dbg_img)
-
-    return [], [], -1
-    # // return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
+    return sorted_x, sorted_y, int(median_size)
 
 
 ###################################################################
@@ -350,6 +332,7 @@ class Minesweeper:
             vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
 
             # debug
+            print(vertical_lines, horizontal_lines, tile_size)
             screen = extract_gray(screen)
             # Set all non-masked pixels to last masked color left of them
             for x in vertical_lines:
