@@ -16,7 +16,9 @@ Img = np.ndarray
 
 
 WINDOW_NAME = 'Minesweeper Cheat'
-MAX_FPS = 60
+MAX_FPS = 5
+NONE_RECT = ((-1, -1), (-1, -1))
+BLACK = (0, 0, 0)
 
 
 ###################################################################
@@ -39,78 +41,58 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
-def get_main_color(img: Img, remove_black: bool) -> tp.Tuple[int, ...]:
-    # if remove_black:
-        # raise NotImplementedError('remove_black is not implemented yet')
-    print(mode(img.reshape(-1, 3), keepdims=False)[0])
-    return tuple(mode(img.reshape(-1, 3), keepdims=False)[0])
-
-
-def remove_non_gray(img: Img, threshold: int = 10) -> Img:
+def extract_gray(img: Img, threshold: int = 10, black_white_threshold: int = 100) -> Img:
     red_blue_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 0].astype(np.int16))
     red_green_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 1].astype(np.int16))
     blue_green_diff = np.abs(img[:, :, 0].astype(np.int16) - img[:, :, 1].astype(np.int16))
+
     mask = ((red_blue_diff < threshold)
             & (red_green_diff < threshold)
             & (blue_green_diff < threshold))
-    # // EROSION_SIZE = 3
-    # // mask = cv.erode(mask.astype(np.uint8), np.ones((EROSION_SIZE, EROSION_SIZE), np.uint8))
 
-    main_color = get_main_color(img, remove_black=True)
-    img[mask] = main_color
+    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    avg_color = np.mean(img[mask])
+    # // print(avg_color)
+    mask &= (np.abs(img - avg_color) < black_white_threshold)
+
+    EROSION_SIZE = 3
+    mask = cv.erode(mask.astype(np.uint8), np.ones((EROSION_SIZE, EROSION_SIZE), np.uint8))
+
+    img = cv.bitwise_and(img, img, mask=mask.astype(np.uint8))
     return img
 
 
 def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
-    img = remove_non_gray(img)
-    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    # // img = cv.cvtColor(cv.bitwise_and(img, img, mask=mask), cv.COLOR_BGR2GRAY)
-    # // # Set all non-masked pixels to last masked color left of them #TODO: optimize
-    # // for y in range(mask.shape[0]):
-    # //     last_masked = 0
-    # //     for x in range(mask.shape[1]):
-    # //         if mask[y, x]:
-    # //             last_masked = x
-    # //         else:
-    # //             img[y, x] = img[y, last_masked]
-    # // debug_img = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
+    img = extract_gray(img)
 
     # Detect horizontal and vertical lines
-    LIGHTER_THRESHOLD = 18
+    LIGHTER_THRESHOLD = 0
     LINES_THRESHOLD = 50
 
     ## Detect vertical lines
-    lighter_than_left = (img[:, 1:] - img[:, :-1]) > LIGHTER_THRESHOLD
-    same_as_up = img[1:, :] == img[:-1, :]
-    vertical_mask = lighter_than_left[1:, :] & same_as_up[:, 1:]
+    lighter_than_left = (img[1:, 1:] - img[1:, :-1]) > LIGHTER_THRESHOLD
+    same_as_up = img[1:, 1:] == img[:-1, 1:]
+    left_non_black = img[1:, :-1] != 0
+    vertical_mask = lighter_than_left & same_as_up & left_non_black
     vertical_lines = cv.HoughLines(vertical_mask.astype(np.uint8), 1, np.pi / 2, LINES_THRESHOLD)
     vertical_lines_x = []
     if vertical_lines is None:
         return [], [], -1 # No need to return horizontal lines, as we need both
     for line in vertical_lines:
         rho, theta = line[0]
-        a, b = np.cos(theta), np.sin(theta)
-        # // x0, y0 = a * rho, b * rho
-        # // x1, y1 = int(x0 + 1000 * (-b)), int(y0 + 1000 * a)
-        # // x2, y2 = int(x0 - 1000 * (-b)), int(y0 - 1000 * a)
-        # // cv.line(debug_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         vertical_lines_x.append(rho)
 
     ## Detect horizontal lines
-    lighter_than_up = (img[1:, :] - img[:-1, :]) > LIGHTER_THRESHOLD
-    same_as_left = img[:, 1:] == img[:, :-1]
-    horizontal_mask = lighter_than_up[:, 1:] & same_as_left[1:, :]
+    lighter_than_up = (img[1:, 1:] - img[:-1, 1:]) > LIGHTER_THRESHOLD
+    same_as_left = img[1:, 1:] == img[1:, :-1]
+    up_non_black = img[:-1, 1:] != 0
+    horizontal_mask = lighter_than_up & same_as_left & up_non_black
     horizontal_lines = cv.HoughLines(horizontal_mask.astype(np.uint8), 1, np.pi / 2, 100)
     horizontal_lines_y = []
     if horizontal_lines is None:
         return [], [], -1 # No need to return vertical lines, as we need both
     for line in horizontal_lines:
         rho, theta = line[0]
-        # // a, b = np.cos(theta), np.sin(theta)
-        # // x0, y0 = a * rho, b * rho
-        # // x1, y1 = int(x0 + 1000 * (-b)), int(y0 + 1000 * a)
-        # // x2, y2 = int(x0 - 1000 * (-b)), int(y0 - 1000 * a)
-        # // cv.line(debug_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
         horizontal_lines_y.append(rho)
 
     # Merge lines that are close to each other into their average
@@ -122,7 +104,7 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         return [], [], -1 # Not enough lines to detect tiles
     max_diff_x = int(np.max(np.diff(sorted_x)))
 
-    # Merge close vertical lines
+    ## Merge close vertical lines
     close_x_indices = np.flatnonzero(np.diff(sorted_x) < MIN_REL_DIFF * max_diff_x)
     if len(close_x_indices):
         first_close_x = close_x_indices[0]
@@ -138,7 +120,7 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         sorted_x = np.unique(sorted_x)
         # // print(np.diff(sorted_x))
 
-    # Merge close horizontal lines
+    ## Merge close horizontal lines
     close_y_indices = np.flatnonzero(np.diff(sorted_y) < MIN_REL_DIFF * max_diff_x)
     if len(close_y_indices):
         first_close_y = close_y_indices[0]
@@ -155,25 +137,8 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         # // print(np.diff(sorted_y))
 
     # Calculate the tile size
-    # // counts_x = np.unique(np.diff(sorted_x), return_counts=True)
-    # // counts_y = np.unique(np.diff(sorted_y), return_counts=True)
-    # // print(counts_x, counts_y)
     all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
-    # // unique_diffs, counts = np.unique(all_diffs, return_counts=True)
-    # // tile_size = int(unique_diffs[np.argmax(counts)])
     tile_size = int(mode(all_diffs, keepdims=False)[0])
-    # // print(tile_size)
-
-    # // for x in sorted_x:
-    # //     cv.line(debug_img, (int(x), 0), (int(x), img.shape[0]), (0, 0, 255), 1)
-    # // for y in sorted_y:
-    # //     cv.line(debug_img, (0, int(y)), (img.shape[1], int(y)), (0, 0, 255), 1)
-
-    # // tile_mask = vertical_mask | horizontal_mask
-    # // cv.imshow('Tile mask', tile_mask.astype(np.uint8) * 255)
-    # // cv.waitKey(0)
-    # // cv.imshow('Debug', debug_img)
-    # // cv.waitKey(0)
 
     return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
 
@@ -184,17 +149,28 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
 
 class Minesweeper:
     def __init__(self):
-        self.minefield_rect: Rect = ((0, 0), (0, 0))
         self.setup()
         self.main_loop()
 
-    def get_screen(self) -> Img:
-        return cv.cvtColor(np.array(pyautogui.screenshot()), cv.COLOR_RGB2BGR)
+    def get_screen(self, area: tp.Optional[Rect] = None, mask_window: bool = False) -> Img:
+        screen = cv.cvtColor(np.array(pyautogui.screenshot()), cv.COLOR_RGB2BGR)
+
+        # Cut out (fill with black) the window of this program
+        win_pos = cv.getWindowImageRect(WINDOW_NAME)
+        left, top, width, height = win_pos
+        right, bottom = left + width, top + height
+        if width > 0 and height > 0:
+            screen[top:bottom, left:right] = 0
+
+        if area is not None:
+            (left, top), (right, bottom) = area
+            screen = screen[top:bottom, left:right]
+
+        return screen
 
     def reset_selection(self):
-        screen_width, screen_height = pyautogui.size()
         self.selection_corner: Pos = (0, 0)
-        self.selected_rect: Rect = ((0, 0), (screen_width, screen_height))
+        self.selected_rect: Rect = NONE_RECT
 
     def setup(self):
         cv.namedWindow(WINDOW_NAME, cv.WINDOW_NORMAL)
@@ -224,41 +200,32 @@ class Minesweeper:
             top, bottom = bottom, top
         self.selected_rect = ((left, top), (right, bottom))
 
-        # screen: Img = self.get_screen()
-        # selected_screen_part = screen[top:bottom, left:right]
-        # self.minefield_rect = find_minefield(selected_screen_part)
+        screen: Img = self.get_screen(self.selected_rect)
+        self.minefield_rect_in_selection = find_minefield(screen)
+        (s_left, s_top), (s_right, s_bottom) = self.selected_rect
+        (m_left, m_top), (m_right, m_bottom) = self.minefield_rect_in_selection
+        self.minefield_rect_global = ((s_left + m_left, s_top + m_top),
+                                      (s_left + m_right, s_top + m_bottom))
 
     def main_loop(self):
         target_delta_time = 1e9 / MAX_FPS
         prev_time = time_ns()
         while True:
-            # Get screen content
-            full_screen: Img = cv.cvtColor(np.array(pyautogui.screenshot()), cv.COLOR_RGB2BGR)
-
-            # Cut out (fill with black) the window of this program
-            win_pos = cv.getWindowImageRect(WINDOW_NAME)
-            left, top, width, height = win_pos
-            right, bottom = left + width, top + height
-            if width > 0 and height > 0:
-                full_screen[top:bottom, left:right] = 0
-
-            # Crop to the selected area
-            (left, top), (right, bottom) = self.selected_rect
-            screen = full_screen[top:bottom, left:right]
+            if self.selected_rect == NONE_RECT:
+                screen = self.get_screen(mask_window=True)
+            else:
+                screen = self.get_screen(self.minefield_rect_global)
 
             # Detect game state
-
-            ## Find the minefield
-            # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
-            self.minefield_rect = find_minefield(screen)
-            cv.rectangle(screen, self.minefield_rect[0], self.minefield_rect[1], (0, 255, 0), 2)
 
             # Detect the grid and tiles
             # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
             vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
+            # // print(vertical_lines, horizontal_lines, tile_size)
+            # // print(np.diff(vertical_lines), np.diff(horizontal_lines))
 
             # debug
-            screen = remove_non_gray(screen)
+            screen = extract_gray(screen)
             # Set all non-masked pixels to last masked color left of them
             for x in vertical_lines:
                 cv.line(screen, (x, 0), (x, screen.shape[0]), (0, 0, 255), 1)
