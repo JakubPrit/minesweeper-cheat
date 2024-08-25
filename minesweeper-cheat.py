@@ -4,6 +4,7 @@ import pyautogui
 import typing as tp
 from time import time_ns
 from scipy.stats import mode # type: ignore
+from enum import Enum
 
 
 ###################################################################
@@ -19,6 +20,12 @@ WINDOW_NAME = 'Minesweeper Cheat'
 MAX_FPS = 5
 NONE_RECT = ((-1, -1), (-1, -1))
 BLACK = (0, 0, 0)
+
+
+class ColorChannel:
+    RED = 2
+    GREEN = 1
+    BLUE = 0
 
 
 ###################################################################
@@ -50,36 +57,35 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
-def extract_gray(img: Img, threshold: int = 10, black_white_threshold: int = 100) -> Img:
-    red_blue_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 0].astype(np.int16))
-    red_green_diff = np.abs(img[:, :, 2].astype(np.int16) - img[:, :, 1].astype(np.int16))
-    blue_green_diff = np.abs(img[:, :, 0].astype(np.int16) - img[:, :, 1].astype(np.int16))
+def extract_gray(bgr_img: Img) -> Img:
+    BLACK_WHITE_THRESHOLD = 100
+    DARK_MODE_THRESHOLD = 8
 
-    mask = ((red_blue_diff < threshold)
-            & (red_green_diff < threshold)
-            & (blue_green_diff < threshold))
+    # Handle exactly gray pixels (not blueish)
+    mask = (bgr_img[:, :, 0] == bgr_img[:, :, 1]) & (bgr_img[:, :, 1] == bgr_img[:, :, 2])
 
-    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    avg_color = np.mean(img[mask])
-    # // print(avg_color)
-    mask &= (np.abs(img - avg_color) < black_white_threshold)
+    # Handle blueish (dark mode) pixels
+    mask |= (((bgr_img[:, :, ColorChannel.BLUE] - bgr_img[:, :, ColorChannel.GREEN])
+              <= DARK_MODE_THRESHOLD)
+             & ((bgr_img[:, :, ColorChannel.GREEN] - bgr_img[:, :, ColorChannel.RED])
+                <= DARK_MODE_THRESHOLD))
 
-    EROSION_SIZE = 3
-    mask = cv.erode(mask.astype(np.uint8), np.ones((EROSION_SIZE, EROSION_SIZE), np.uint8))
+    bgr_img = cv.cvtColor(bgr_img, cv.COLOR_BGR2GRAY)
+    avg_color = np.mean(bgr_img[mask])
+    mask &= (np.abs(bgr_img - avg_color) < BLACK_WHITE_THRESHOLD)
 
-    img = cv.bitwise_and(img, img, mask=mask.astype(np.uint8))
-    return img
+    bgr_img = cv.bitwise_and(bgr_img, bgr_img, mask=mask.astype(np.uint8))
+    return bgr_img
 
 
 def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     img = extract_gray(img)
 
     # Detect horizontal and vertical lines
-    LIGHTER_THRESHOLD = 0
     LINES_THRESHOLD = 50
 
     ## Detect vertical lines
-    lighter_than_left = (img[1:, 1:] - img[1:, :-1]) > LIGHTER_THRESHOLD
+    lighter_than_left = img[1:, 1:] > img[1:, :-1]
     same_as_up = img[1:, 1:] == img[:-1, 1:]
     left_non_black = img[1:, :-1] != 0
     vertical_mask = lighter_than_left & same_as_up & left_non_black
@@ -92,7 +98,7 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         vertical_lines_x.append(rho)
 
     ## Detect horizontal lines
-    lighter_than_up = (img[1:, 1:] - img[:-1, 1:]) > LIGHTER_THRESHOLD
+    lighter_than_up = img[1:, 1:] > img[:-1, 1:]
     same_as_left = img[1:, 1:] == img[1:, :-1]
     up_non_black = img[:-1, 1:] != 0
     horizontal_mask = lighter_than_up & same_as_left & up_non_black
@@ -149,37 +155,56 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
     tile_size = int(mode(all_diffs, keepdims=False)[0])
 
-    TILE_SIZE_MAX_REL_DIFF = 0.15
-    max_diff_diff = TILE_SIZE_MAX_REL_DIFF * tile_size
-    while True:
-        good_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
-        good_x_lines_mask[:-1] |= (np.abs(np.diff(sorted_x)) - tile_size) <= max_diff_diff
-        good_x_lines_mask[1:] |= (np.abs(np.diff(sorted_x)) - tile_size) <= max_diff_diff
-        if np.all(good_x_lines_mask):
-            break
-        # bad lines = lines with bad diff to a neighboring good line
-        bad_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
-        bad_x_lines_mask[:-1] |= (((np.abs(np.diff(sorted_x)) - tile_size) > max_diff_diff)
-                                  & good_x_lines_mask[1:])
-        bad_x_lines_mask[1:] |= (((np.abs(np.diff(sorted_x)) - tile_size) > max_diff_diff)
-                                & good_x_lines_mask[:-1])
-        # remove bad lines
-        sorted_x = sorted_x[~bad_x_lines_mask]
-    while True:
-        good_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
-        good_y_lines_mask[:-1] |= (np.abs(np.diff(sorted_y)) - tile_size) <= max_diff_diff
-        good_y_lines_mask[1:] |= (np.abs(np.diff(sorted_y)) - tile_size) <= max_diff_diff
-        if np.all(good_y_lines_mask):
-            break
-        # bad lines = lines with bad diff to a neighboring good line
-        bad_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
-        bad_y_lines_mask[:-1] |= (((np.abs(np.diff(sorted_y)) - tile_size) > max_diff_diff)
-                                  & good_y_lines_mask[1:])
-        bad_y_lines_mask[1:] |= (((np.abs(np.diff(sorted_y)) - tile_size) > max_diff_diff)
-                                & good_y_lines_mask[:-1])
-        # remove bad lines
-        sorted_y = sorted_y[~bad_y_lines_mask]
+    # Debug
+    if cv.waitKey(1) == ord('d'):
+        dbg_img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
+        for x in sorted_x:
+            cv.line(dbg_img, (int(x), 0), (int(x), dbg_img.shape[0]), (0, 0, 255), 1)
+        for y in sorted_y:
+            cv.line(dbg_img, (0, int(y)), (dbg_img.shape[1], int(y)), (0, 0, 255), 1)
+        cv.imshow('debug', dbg_img)
+        cv.waitKey(0)
 
+        dbg_img = cv.cvtColor((vertical_mask | horizontal_mask).astype(np.uint8) * 255, cv.COLOR_GRAY2BGR)
+        # // for x in sorted_x:
+        # //     cv.line(dbg_img, (int(x), 0), (int(x), dbg_img.shape[0]), (0, 0, 255), 1)
+        # // for y in sorted_y:
+        # //     cv.line(dbg_img, (0, int(y)), (dbg_img.shape[1], int(y)), (0, 0, 255), 1)
+        cv.imshow('debug', dbg_img)
+        cv.waitKey(0)
+        cv.destroyWindow('debug')
+
+    # Remove lines that are not evenly spaced
+    TILE_SIZE_MAX_REL_DIFF = 0.25
+    max_diff_diff = TILE_SIZE_MAX_REL_DIFF * tile_size
+    while len(sorted_x) > 3:
+        diff_diff_tile_size = np.abs(np.diff(sorted_x) - tile_size)
+        good_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
+        good_x_lines_mask[:-1] |= diff_diff_tile_size <= max_diff_diff
+        good_x_lines_mask[1:] |= diff_diff_tile_size <= max_diff_diff
+        if np.all(good_x_lines_mask) or np.all(~good_x_lines_mask):
+            break
+        # bad lines = lines with bad diff against a neighboring good line
+        bad_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
+        bad_x_lines_mask[:-1] |= (~good_x_lines_mask[:-1]) & good_x_lines_mask[1:]
+        bad_x_lines_mask[1:] |= (~good_x_lines_mask[1:]) & good_x_lines_mask[:-1]
+        # remove bad lines
+        print('x', sorted_x, np.diff(sorted_x), good_x_lines_mask, bad_x_lines_mask) # debug
+        sorted_x = sorted_x[~bad_x_lines_mask]
+    while len(sorted_y) > 3:
+        diff_diff_tile_size = np.abs(np.diff(sorted_y) - tile_size)
+        good_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
+        good_y_lines_mask[:-1] |= diff_diff_tile_size <= max_diff_diff
+        good_y_lines_mask[1:] |= diff_diff_tile_size <= max_diff_diff
+        if np.all(good_y_lines_mask) or np.all(~good_y_lines_mask):
+            break
+        # bad lines = lines with bad diff against a neighboring good line
+        bad_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
+        bad_y_lines_mask[:-1] |= (~good_y_lines_mask[:-1]) & good_y_lines_mask[1:]
+        bad_y_lines_mask[1:] |= (~good_y_lines_mask[1:]) & good_y_lines_mask[:-1]
+        # remove bad lines
+        print('y', sorted_y, np.diff(sorted_y), good_y_lines_mask, bad_y_lines_mask) # debug
+        sorted_y = sorted_y[~bad_y_lines_mask]
 
     return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
 
@@ -288,8 +313,6 @@ class Minesweeper:
             # Detect the grid and tiles
             # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
             vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
-            # // print(vertical_lines, horizontal_lines, tile_size)
-            # // print(np.diff(vertical_lines), np.diff(horizontal_lines))
 
             # debug
             screen = extract_gray(screen)
