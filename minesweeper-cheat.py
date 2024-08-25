@@ -26,6 +26,15 @@ BLACK = (0, 0, 0)
 ###################################################################
 
 def find_minefield(screen: Img) -> Rect:
+    """ Find the minefield in the screen image by detecting the largest rectangle.
+
+    Args:
+        screen (Img): The screen image.
+
+    Returns:
+        Rect: The rectangle of the minefield in the form ((left, top), (right, bottom)).
+    """
+
     edges = cv.Canny(screen, 100, 200)
     contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
@@ -140,6 +149,38 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
     tile_size = int(mode(all_diffs, keepdims=False)[0])
 
+    TILE_SIZE_MAX_REL_DIFF = 0.15
+    max_diff_diff = TILE_SIZE_MAX_REL_DIFF * tile_size
+    while True:
+        good_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
+        good_x_lines_mask[:-1] |= (np.abs(np.diff(sorted_x)) - tile_size) <= max_diff_diff
+        good_x_lines_mask[1:] |= (np.abs(np.diff(sorted_x)) - tile_size) <= max_diff_diff
+        if np.all(good_x_lines_mask):
+            break
+        # bad lines = lines with bad diff to a neighboring good line
+        bad_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
+        bad_x_lines_mask[:-1] |= (((np.abs(np.diff(sorted_x)) - tile_size) > max_diff_diff)
+                                  & good_x_lines_mask[1:])
+        bad_x_lines_mask[1:] |= (((np.abs(np.diff(sorted_x)) - tile_size) > max_diff_diff)
+                                & good_x_lines_mask[:-1])
+        # remove bad lines
+        sorted_x = sorted_x[~bad_x_lines_mask]
+    while True:
+        good_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
+        good_y_lines_mask[:-1] |= (np.abs(np.diff(sorted_y)) - tile_size) <= max_diff_diff
+        good_y_lines_mask[1:] |= (np.abs(np.diff(sorted_y)) - tile_size) <= max_diff_diff
+        if np.all(good_y_lines_mask):
+            break
+        # bad lines = lines with bad diff to a neighboring good line
+        bad_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
+        bad_y_lines_mask[:-1] |= (((np.abs(np.diff(sorted_y)) - tile_size) > max_diff_diff)
+                                  & good_y_lines_mask[1:])
+        bad_y_lines_mask[1:] |= (((np.abs(np.diff(sorted_y)) - tile_size) > max_diff_diff)
+                                & good_y_lines_mask[:-1])
+        # remove bad lines
+        sorted_y = sorted_y[~bad_y_lines_mask]
+
+
     return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
 
 
@@ -153,6 +194,20 @@ class Minesweeper:
         self.main_loop()
 
     def get_screen(self, area: tp.Optional[Rect] = None, mask_window: bool = False) -> Img:
+        """ Get the screen image, optionally masking the window of this program with black 
+            and/or cropping to a specific area.
+
+
+        Args:
+            area (tp.Optional[Rect], optional): The area to crop to in the form of
+                ((left, top), (right, bottom)). Defaults to None.
+            mask_window (bool, optional): Whether to mask the window of this program with black.
+                Defaults to False.
+
+        Returns:
+            Img: The screen image.
+        """
+
         screen = cv.cvtColor(np.array(pyautogui.screenshot()), cv.COLOR_RGB2BGR)
 
         # Cut out (fill with black) the window of this program
@@ -169,15 +224,21 @@ class Minesweeper:
         return screen
 
     def reset_selection(self):
+        """ Resets the selected screen area to show the whole screen
+            and select the minefield again.
+        """
         self.selection_corner: Pos = (0, 0)
         self.selected_rect: Rect = NONE_RECT
 
     def setup(self):
+        """ Initialize the GUI and the state of the program. """
         cv.namedWindow(WINDOW_NAME, cv.WINDOW_NORMAL)
         self.reset_selection()
-        cv.setMouseCallback(WINDOW_NAME, self.handle_mouse_event) # type: ignore
+        cv.setMouseCallback(WINDOW_NAME, self._handle_mouse_event) # type: ignore
 
-    def handle_mouse_event(self, event, *_):
+    def _handle_mouse_event(self, event, *_):
+        """ Handle mouse events in the GUI. Used to select the minefield area. """
+
         if event in (cv.EVENT_LBUTTONDOWN, cv.EVENT_LBUTTONUP):
             mouse_x, mouse_y = pyautogui.position()
             screen_width, screen_height = pyautogui.size()
@@ -193,6 +254,10 @@ class Minesweeper:
                 self.handle_selected_rect_change()
 
     def handle_selected_rect_change(self):
+        """ Handle the change of the selected screen area.
+            Finds the minefield in the selection.
+        """
+
         (left, top), (right, bottom) = self.selected_rect
         if left > right:
             left, right = right, left
@@ -208,6 +273,8 @@ class Minesweeper:
                                       (s_left + m_right, s_top + m_bottom))
 
     def main_loop(self):
+        """ The main loop of the program. """
+
         target_delta_time = 1e9 / MAX_FPS
         prev_time = time_ns()
         while True:
