@@ -5,6 +5,7 @@ import typing as tp
 from time import time_ns
 from scipy.stats import mode # type: ignore
 from enum import Enum
+from math import isclose
 
 
 ###################################################################
@@ -58,6 +59,19 @@ def find_minefield(screen: Img) -> Rect:
 
 
 def extract_gray(bgr_img: Img) -> Img:
+    """ Mask out all non-gray pixels in the image. Gray pixels are defined as pixels
+        that have the same value in all three color channels, or pixels that have their blue
+        channel value slightly higher than the green channel value and the red channel value
+        slightly lower than the green channel value, with these differences not higher than
+        DARK_MODE_THRESHOLD (corresponds to minesweeper.online dark mode tile colors).
+
+    Args:
+        bgr_img (Img): The image to mask. Has to be in BGR format.
+
+    Returns:
+        Img: The masked image.
+    """
+
     BLACK_WHITE_THRESHOLD = 100
     DARK_MODE_THRESHOLD = 8
 
@@ -78,135 +92,156 @@ def extract_gray(bgr_img: Img) -> Img:
     return bgr_img
 
 
+def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
+    """ Detect the edges in the image using a custom edge detection algorithm.
+        Only detect the edges that are lighter on the right (bottom) side than on the
+        left (top) side and are the same color as the pixel above (left). Repeat the process
+        for iterations times, but drops the requirement of the previous pixel being non-black
+        after the first iteration.
+
+    Args:
+        img (Img): The image to detect edges in.
+        vertical (bool): Whether to detect vertical edges (True) or horizontal edges (False).
+        iterations (int, optional): The number of iterations to repeat the edge detection.
+            Defaults to 1.
+
+    Returns:
+        Img: The edges mask.
+    """
+
+    for i in range(iterations):
+        if vertical:
+            lighter_than_left = img[1:, 1:] > img[1:, :-1]
+            same_as_up = img[1:, 1:] == img[:-1, 1:]
+            if i == 0:
+                left_non_black = img[1:, :-1] != 0
+                img = lighter_than_left & same_as_up & left_non_black
+            else:
+                img = lighter_than_left & same_as_up
+        else:
+            lighter_than_up = img[1:, 1:] > img[:-1, 1:]
+            same_as_left = img[1:, 1:] == img[1:, :-1]
+            if i == 0:
+                up_non_black = img[:-1, 1:] != 0
+                img = lighter_than_up & same_as_left & up_non_black
+            else:
+                img = lighter_than_up & same_as_left
+    return img
+
+
 def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     img = extract_gray(img)
 
-    # Detect horizontal and vertical lines
-    LINES_THRESHOLD = 50
+    vertical_mask = detect_edges(img, vertical=True, iterations=2)
+    horizontal_mask = detect_edges(img, vertical=False, iterations=2)
+    edges = horizontal_mask | vertical_mask
 
-    ## Detect vertical lines
-    lighter_than_left = img[1:, 1:] > img[1:, :-1]
-    same_as_up = img[1:, 1:] == img[:-1, 1:]
-    left_non_black = img[1:, :-1] != 0
-    vertical_mask = lighter_than_left & same_as_up & left_non_black
-    vertical_lines = cv.HoughLines(vertical_mask.astype(np.uint8), 1, np.pi / 2, LINES_THRESHOLD)
-    vertical_lines_x = []
-    if vertical_lines is None:
-        return [], [], -1 # No need to return horizontal lines, as we need both
-    for line in vertical_lines:
-        rho, theta = line[0]
-        vertical_lines_x.append(rho)
+    KERNEL1 = np.array([[0, 0, 0],
+                        [1, 1, 1],
+                        [0, 0, 0]], np.uint8)
+    KERNEL2 = np.array([[0, 1, 0],
+                        [0, 1, 0],
+                        [0, 1, 0]], np.uint8)
+    HIT_OR_MISS_REPS = 2
+    for _ in range(HIT_OR_MISS_REPS):
+        hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1)
+        hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
+        edges = hit_or_miss1 | hit_or_miss2
 
-    ## Detect horizontal lines
-    lighter_than_up = img[1:, 1:] > img[:-1, 1:]
-    same_as_left = img[1:, 1:] == img[1:, :-1]
-    up_non_black = img[:-1, 1:] != 0
-    horizontal_mask = lighter_than_up & same_as_left & up_non_black
-    horizontal_lines = cv.HoughLines(horizontal_mask.astype(np.uint8), 1, np.pi / 2, 100)
-    horizontal_lines_y = []
-    if horizontal_lines is None:
-        return [], [], -1 # No need to return vertical lines, as we need both
-    for line in horizontal_lines:
-        rho, theta = line[0]
-        horizontal_lines_y.append(rho)
+    cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
+    edges_x = []
+    edges_y = []
 
-    # Merge lines that are close to each other into their average
-    MIN_REL_DIFF = 0.3
+    # // LINES_THRESHOLD = 100
 
-    sorted_x = np.sort(vertical_lines_x)
-    sorted_y = np.sort(horizontal_lines_y)
-    if len(sorted_x) < 2 or len(sorted_y) < 2:
-        return [], [], -1 # Not enough lines to detect tiles
-    max_diff_x = int(np.max(np.diff(sorted_x)))
+    # // lines = cv.HoughLines(edges.astype(np.uint8), 1, np.pi / 2, LINES_THRESHOLD)
+    # // vertical_lines_x = []
+    # // horizontal_lines_y = []
+    # // if lines is None:
+    # //     print('No lines detected') # Debug
+    # //     return [], [], -1 # Nothing detected
+    # // for line in lines:
+    # //     rho, theta = line[0]
+    # //     if theta == 0:
+    # //         vertical_lines_x.append(rho)
+    # //     else:
+    # //         horizontal_lines_y.append(rho)
 
-    ## Merge close vertical lines
-    close_x_indices = np.flatnonzero(np.diff(sorted_x) < MIN_REL_DIFF * max_diff_x)
-    if len(close_x_indices):
-        first_close_x = close_x_indices[0]
-        prev_close_x = close_x_indices[0]
-        for i in close_x_indices:
-            if i - prev_close_x > 1:
-                sorted_x[first_close_x : prev_close_x + 2] \
-                    = np.mean(sorted_x[first_close_x : prev_close_x + 2])
-                first_close_x = i
-            prev_close_x = i
-        sorted_x[first_close_x : prev_close_x + 2] \
-            = np.mean(sorted_x[first_close_x : prev_close_x + 2])
-        sorted_x = np.unique(sorted_x)
-        # // print(np.diff(sorted_x))
+    # // # Merge lines that are close to each other into their average
+    # // MIN_REL_DIFF = 0.3
 
-    ## Merge close horizontal lines
-    close_y_indices = np.flatnonzero(np.diff(sorted_y) < MIN_REL_DIFF * max_diff_x)
-    if len(close_y_indices):
-        first_close_y = close_y_indices[0]
-        prev_close_y = close_y_indices[0]
-        for i in close_y_indices:
-            if i - prev_close_y > 1:
-                sorted_y[first_close_y : prev_close_y + 2] \
-                    = np.mean(sorted_y[first_close_y : prev_close_y + 2])
-                first_close_y = i
-            prev_close_y = i
-        sorted_y[first_close_y : prev_close_y + 2] \
-            = np.mean(sorted_y[first_close_y : prev_close_y + 2])
-        sorted_y = np.unique(sorted_y)
-        # // print(np.diff(sorted_y))
+    # // sorted_x = np.sort(vertical_lines_x)
+    # // sorted_y = np.sort(horizontal_lines_y)
+    # // if len(sorted_x) < 2 or len(sorted_y) < 2:
+    # //     return [], [], -1 # Not enough lines to detect tiles
+    # // max_diff_x = int(np.max(np.diff(sorted_x)))
 
-    # Calculate the tile size
-    all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
-    tile_size = int(mode(all_diffs, keepdims=False)[0])
+    # // ## Merge close vertical lines
+    # // close_x_indices = np.flatnonzero(np.diff(sorted_x) < MIN_REL_DIFF * max_diff_x)
+    # // if len(close_x_indices):
+    # //     first_close_x = close_x_indices[0]
+    # //     prev_close_x = close_x_indices[0]
+    # //     for i in close_x_indices:
+    # //         if i - prev_close_x > 1:
+    # //             sorted_x[first_close_x : prev_close_x + 2] \
+    # //                 = np.mean(sorted_x[first_close_x : prev_close_x + 2])
+    # //             first_close_x = i
+    # //         prev_close_x = i
+    # //     sorted_x[first_close_x : prev_close_x + 2] \
+    # //         = np.mean(sorted_x[first_close_x : prev_close_x + 2])
+    # //     sorted_x = np.unique(sorted_x)
+    # //     # // print(np.diff(sorted_x))
+
+    # // ## Merge close horizontal lines
+    # // close_y_indices = np.flatnonzero(np.diff(sorted_y) < MIN_REL_DIFF * max_diff_x)
+    # // if len(close_y_indices):
+    # //     first_close_y = close_y_indices[0]
+    # //     prev_close_y = close_y_indices[0]
+    # //     for i in close_y_indices:
+    # //         if i - prev_close_y > 1:
+    # //             sorted_y[first_close_y : prev_close_y + 2] \
+    # //                 = np.mean(sorted_y[first_close_y : prev_close_y + 2])
+    # //             first_close_y = i
+    # //         prev_close_y = i
+    # //     sorted_y[first_close_y : prev_close_y + 2] \
+    # //         = np.mean(sorted_y[first_close_y : prev_close_y + 2])
+    # //     sorted_y = np.unique(sorted_y)
+    # //     # // print(np.diff(sorted_y))
+
+    # // # Calculate the tile size
+    # // all_diffs = np.concatenate((np.diff(sorted_x), np.diff(sorted_y)))
+    # // tile_size = int(mode(all_diffs, keepdims=False)[0])
 
     # Debug
     if cv.waitKey(1) == ord('d'):
-        dbg_img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-        for x in sorted_x:
-            cv.line(dbg_img, (int(x), 0), (int(x), dbg_img.shape[0]), (0, 0, 255), 1)
-        for y in sorted_y:
-            cv.line(dbg_img, (0, int(y)), (dbg_img.shape[1], int(y)), (0, 0, 255), 1)
-        cv.imshow('debug', dbg_img)
-        cv.waitKey(0)
-
-        dbg_img = cv.cvtColor((vertical_mask | horizontal_mask).astype(np.uint8) * 255, cv.COLOR_GRAY2BGR)
+        # // dbg_img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
         # // for x in sorted_x:
         # //     cv.line(dbg_img, (int(x), 0), (int(x), dbg_img.shape[0]), (0, 0, 255), 1)
         # // for y in sorted_y:
         # //     cv.line(dbg_img, (0, int(y)), (dbg_img.shape[1], int(y)), (0, 0, 255), 1)
+        # // cv.imshow('debug', dbg_img)
+        # // cv.waitKey(0)
+
+        dbg_img = edges.astype(np.uint8) * 255
+        contours = cv.findContours(dbg_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
+        dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
+        cv.drawContours(dbg_img, contours, -1, (0, 0, 255), 1)
         cv.imshow('debug', dbg_img)
         cv.waitKey(0)
         cv.destroyWindow('debug')
 
-    # Remove lines that are not evenly spaced
-    TILE_SIZE_MAX_REL_DIFF = 0.25
-    max_diff_diff = TILE_SIZE_MAX_REL_DIFF * tile_size
-    while len(sorted_x) > 3:
-        diff_diff_tile_size = np.abs(np.diff(sorted_x) - tile_size)
-        good_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
-        good_x_lines_mask[:-1] |= diff_diff_tile_size <= max_diff_diff
-        good_x_lines_mask[1:] |= diff_diff_tile_size <= max_diff_diff
-        if np.all(good_x_lines_mask) or np.all(~good_x_lines_mask):
-            break
-        # bad lines = lines with bad diff against a neighboring good line
-        bad_x_lines_mask = np.zeros(len(sorted_x), dtype=bool)
-        bad_x_lines_mask[:-1] |= (~good_x_lines_mask[:-1]) & good_x_lines_mask[1:]
-        bad_x_lines_mask[1:] |= (~good_x_lines_mask[1:]) & good_x_lines_mask[:-1]
-        # remove bad lines
-        print('x', sorted_x, np.diff(sorted_x), good_x_lines_mask, bad_x_lines_mask) # debug
-        sorted_x = sorted_x[~bad_x_lines_mask]
-    while len(sorted_y) > 3:
-        diff_diff_tile_size = np.abs(np.diff(sorted_y) - tile_size)
-        good_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
-        good_y_lines_mask[:-1] |= diff_diff_tile_size <= max_diff_diff
-        good_y_lines_mask[1:] |= diff_diff_tile_size <= max_diff_diff
-        if np.all(good_y_lines_mask) or np.all(~good_y_lines_mask):
-            break
-        # bad lines = lines with bad diff against a neighboring good line
-        bad_y_lines_mask = np.zeros(len(sorted_y), dtype=bool)
-        bad_y_lines_mask[:-1] |= (~good_y_lines_mask[:-1]) & good_y_lines_mask[1:]
-        bad_y_lines_mask[1:] |= (~good_y_lines_mask[1:]) & good_y_lines_mask[:-1]
-        # remove bad lines
-        print('y', sorted_y, np.diff(sorted_y), good_y_lines_mask, bad_y_lines_mask) # debug
-        sorted_y = sorted_y[~bad_y_lines_mask]
+        # // dbg_img = (vertical_mask | horizontal_mask).astype(np.uint8) * 255
+        # // #detect corners
+        # // corners = cv.goodFeaturesToTrack(dbg_img, 4, 0.01, 10)
+        # // corners = corners.astype(np.uint8)
+        # // dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
+        # // for i in corners:
+        # //     x, y = i.ravel()
+        # //     cv.circle(dbg_img, (x, y), 3, 255, -1)
+        # // cv.imshow('debug', dbg_img)
 
-    return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
+    return [], [], -1
+    # // return [int(x) for x in sorted_x], [int(y) for y in sorted_y], tile_size
 
 
 ###################################################################
