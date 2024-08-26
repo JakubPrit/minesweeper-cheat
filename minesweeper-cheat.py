@@ -21,6 +21,7 @@ WINDOW_NAME = 'Minesweeper Cheat'
 MAX_FPS = 5
 NONE_RECT = ((-1, -1), (-1, -1))
 BLACK = (0, 0, 0)
+RED = (0, 0, 255)
 
 
 class ColorChannel:
@@ -155,14 +156,14 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     KERNEL2 = np.array([[0, 1, 0],
                         [0, 1, 0],
                         [0, 1, 0]], np.uint8)
-    HIT_OR_MISS_REPS = 2
+    HIT_OR_MISS_REPS = 1
     for _ in range(HIT_OR_MISS_REPS):
         hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1)
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
 
-    MIN_REL_SIZE = 0.8
-    MAX_REL_SIZE = 1.2
+    MIN_REL_SIZE = 0.75
+    MAX_REL_SIZE = 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
     edges_x, edges_y = [], []
     sizes = []
@@ -180,22 +181,25 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         if w > 1 and h > 1:
             continue
         if min_size <= w <= max_size:
-            edges_x.append(x)
-        if min_size <= h <= max_size:
             edges_y.append(y)
+        if min_size <= h <= max_size:
+            edges_x.append(x)
 
     sorted_x = np.unique(edges_x)
     sorted_y = np.unique(edges_y)
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough edges found
 
-    SAME_THRESHOLD = 0.2
-    CLOSE_THRESHOLD = 0.8
-    FAR_THRESHOLD = 1.7
+    SAME_THRESHOLD = 0.3
     sorted_x = sorted_x[np.diff(sorted_x, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
     sorted_y = sorted_y[np.diff(sorted_y, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
-    min_size = CLOSE_THRESHOLD * median_size
-    max_size = FAR_THRESHOLD * median_size
+
+    median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
+
+    CLOSE_THRESHOLD = 0.7
+    FAR_THRESHOLD = 1.3
+    min_size = CLOSE_THRESHOLD * median_diff
+    max_size = FAR_THRESHOLD * median_diff
     while len(sorted_x) > 1 and not (min_size <= (sorted_x[-1] - sorted_x[-2]) <= max_size):
         sorted_x = sorted_x[:-1]
     while len(sorted_y) > 1 and not (min_size <= (sorted_y[-1] - sorted_y[-2]) <= max_size):
@@ -204,26 +208,29 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         sorted_x = sorted_x[1:]
     while len(sorted_y) > 1 and not (min_size <= (sorted_y[1] - sorted_y[0]) <= max_size):
         sorted_y = sorted_y[1:]
-    while len(sorted_x) > 1 and sorted_x[0] < (CLOSE_THRESHOLD * median_size):
+    while len(sorted_x) > 1 and sorted_x[0] < (CLOSE_THRESHOLD * median_diff):
         sorted_x = sorted_x[1:]
-    while len(sorted_y) > 1 and sorted_y[0] < (CLOSE_THRESHOLD * median_size):
+    while len(sorted_y) > 1 and sorted_y[0] < (CLOSE_THRESHOLD * median_diff):
         sorted_y = sorted_y[1:]
 
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough suitable edges found
 
+    median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
 
-    # Debug
-    if cv.waitKey(1) == ord('d'):
-        dbg_img = edges.astype(np.uint8) * 255
-        contours = cv.findContours(dbg_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
-        dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
-        cv.drawContours(dbg_img, contours, -1, (0, 0, 255), 1)
-        cv.imshow('debug', dbg_img)
-        cv.waitKey(0)
-        cv.destroyWindow('debug')
+    # // # Debug
+    # // if cv.waitKey(1) == ord('d'):
+    # //     dbg_img = edges.astype(np.uint8) * 255
+    # //     contours = cv.findContours(dbg_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
+    # //     dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
+    # //     for cnt in contours:
+    # //         x, y, w, h = cv.boundingRect(cnt)
+    # //         cv.rectangle(dbg_img, (x, y), (x + w, y + h), (0, 255, 0), 1)
+    # //     cv.imshow('debug', dbg_img)
+    # //     cv.waitKey(0)
+    # //     cv.destroyWindow('debug')
 
-    return sorted_x, sorted_y, int(median_size)
+    return sorted_x, sorted_y, int(median_diff)
 
 
 ###################################################################
@@ -232,8 +239,8 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
 
 class Minesweeper:
     def __init__(self):
-        self.setup()
-        self.main_loop()
+        self._setup()
+        self._main_loop()
 
     def get_screen(self, area: tp.Optional[Rect] = None, mask_window: bool = False) -> Img:
         """ Get the screen image, optionally masking the window of this program with black 
@@ -269,12 +276,15 @@ class Minesweeper:
         """ Resets the selected screen area to show the whole screen
             and select the minefield again.
         """
+
         self.selection_corner: Pos = (0, 0)
         self.selected_rect: Rect = NONE_RECT
 
-    def setup(self):
+    def _setup(self):
         """ Initialize the GUI and the state of the program. """
+
         cv.namedWindow(WINDOW_NAME, cv.WINDOW_NORMAL)
+        self.is_grid_detected = False
         self.reset_selection()
         cv.setMouseCallback(WINDOW_NAME, self._handle_mouse_event) # type: ignore
 
@@ -308,13 +318,27 @@ class Minesweeper:
         self.selected_rect = ((left, top), (right, bottom))
 
         screen: Img = self.get_screen(self.selected_rect)
+
+        # Find the minefield in the selection
         self.minefield_rect_in_selection = find_minefield(screen)
         (s_left, s_top), (s_right, s_bottom) = self.selected_rect
         (m_left, m_top), (m_right, m_bottom) = self.minefield_rect_in_selection
         self.minefield_rect_global = ((s_left + m_left, s_top + m_top),
                                       (s_left + m_right, s_top + m_bottom))
 
-    def main_loop(self):
+        screen = self.get_screen(self.minefield_rect_global)
+
+        # Find the grid of tiles
+        self.vertical_lines, self.horizontal_lines, self.tile_size = detect_tiles(screen)
+        self.n_cols = len(self.vertical_lines)
+        self.n_rows = len(self.horizontal_lines)
+        self.is_grid_detected = self.tile_size != -1
+
+    # Debug
+    def draw_debug_grid(self, screen: Img):
+        pass # TODO
+
+    def _main_loop(self):
         """ The main loop of the program. """
 
         target_delta_time = 1e9 / MAX_FPS
@@ -324,25 +348,27 @@ class Minesweeper:
                 screen = self.get_screen(mask_window=True)
             else:
                 screen = self.get_screen(self.minefield_rect_global)
+                self.draw_debug_grid(screen)
 
-            # Detect game state
+            # // # Detect the grid and tiles
+            # // # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
+            # // vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
 
-            # Detect the grid and tiles
-            # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
-            vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
+            # // # debug
+            # // # print(vertical_lines, horizontal_lines, tile_size)
+            # // screen = extract_gray(screen)
+            # // # Set all non-masked pixels to last masked color left of them
+            # // for x in vertical_lines:
+            # //     cv.line(screen, (x, 0), (x, screen.shape[0]), (0, 0, 255), 2)
+            # // for y in horizontal_lines:
+            # //     cv.line(screen, (0, y), (screen.shape[1], y), (0, 0, 255), 2)
+            # // cv.rectangle(screen, (0, 0), (tile_size, tile_size), (255, 0, 0), 2)
 
-            # debug
-            print(vertical_lines, horizontal_lines, tile_size)
-            screen = extract_gray(screen)
-            # Set all non-masked pixels to last masked color left of them
-            for x in vertical_lines:
-                cv.line(screen, (x, 0), (x, screen.shape[0]), (0, 0, 255), 1)
-            for y in horizontal_lines:
-                cv.line(screen, (0, y), (screen.shape[1], y), (0, 0, 255), 1)
-            cv.rectangle(screen, (0, 0), (tile_size, tile_size), (255, 0, 0), 2)
 
             # Show the screen
             cv.imshow(WINDOW_NAME, screen)
+
+            # TODO: Detect game state
 
             # Limit the frame rate and handle user input
             curr_time = time_ns()
