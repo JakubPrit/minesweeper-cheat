@@ -15,6 +15,7 @@ from math import isclose
 Pos = tp.Tuple[int, int]
 Rect = tp.Tuple[Pos, Pos]
 Img = np.ndarray
+HSVColor = tp.Tuple[int, int, int]
 
 
 WINDOW_NAME = 'Minesweeper Cheat'
@@ -24,15 +25,73 @@ BLACK = (0, 0, 0)
 RED = (0, 0, 255)
 
 
-LIGHT_MODE_STATE_HS_COLORS = {
-    1: (240, 100), # V up to 100
-    2: (120, 100), # V up to 47
-    3: (0, 100), # V up to 93
-    4: (240, 100), # V up to 50
-    5: (0, 100), # V up to 50
-    6: (180, 100), # V up to 50
-    7: (0, 0), # V = 0
-    8: (0, 0) # V up to 44
+EMPTY = 0
+UNCLICKED = 9
+FLAGGED = 10
+UNMATCHED = 255
+
+
+# HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
+LIGHT_MODE_STATE_HSV_COLORS = {
+    0: (0, 0, 78),
+    1: (120, 100, 100),
+    2: (60, 100, 47),
+    3: (0, 100, 93),
+    4: (120, 100, 50),
+    5: (0, 100, 50),
+    6: (90, 100, 50),
+    7: (0, 0, 0),
+    8: (0, 0, 44),
+    UNCLICKED: (0, 0, 78),
+}
+DARK_MODE_STATE_HSV_COLORS = {
+    0: (105, 22, 28),
+    1: (103, 51, 100),
+    2: (60, 47, 75),
+    3: (176, 53, 100),
+    4: (145, 47, 100),
+    5: (22, 85, 87),
+    6: (90, 50, 80),
+    7: (0, 0, 60),
+    8: (105, 7, 88),
+    UNCLICKED: (210, 18, 35),
+}
+NIGHT_SHIFT_STATE_HSV_COLORS = {
+    0: (0, 0, 20),
+    1: (105, 54, 87),
+    2: (60, 50, 63),
+    3: (175, 50, 80),
+    4: (140, 46, 87),
+    5: (27, 100, 67),
+    6: (90, 50, 67),
+    7: (0, 0, 60),
+    8: (0, 0, 80),
+    UNCLICKED: (0, 0, 27),
+}
+
+HUE_THRESHOLD = 10
+SATURATION_THRESHOLD = 10
+VALUE_THRESHOLD = 5
+LIGHT_MODE_STATE_HSV_THRESHOLDS = {
+    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
+           max(0, color[2] // 2 - VALUE_THRESHOLD)),
+          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
+           min(100, color[2] + VALUE_THRESHOLD)))
+    for key, color in LIGHT_MODE_STATE_HSV_COLORS.items()
+}
+DARK_MODE_STATE_HSV_THRESHOLDS = {
+    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
+           max(0, color[2] // 2 - VALUE_THRESHOLD)),
+          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
+           min(100, color[2] + VALUE_THRESHOLD)))
+    for key, color in DARK_MODE_STATE_HSV_COLORS.items()
+}
+NIGHT_SHIFT_STATE_HSV_THRESHOLDS = {
+    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
+           max(0, color[2] // 2 - VALUE_THRESHOLD)),
+          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
+           min(100, color[2] + VALUE_THRESHOLD)))
+    for key, color in NIGHT_SHIFT_STATE_HSV_COLORS.items()
 }
 
 
@@ -227,6 +286,28 @@ def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
 
     median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
     return sorted_x, sorted_y, int(median_diff)
+
+
+def match_color(img: Img, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]) -> Img:
+    """ Match the color of the pixel in the image to the colors in the color threshold dictionary.
+
+    Args:
+        img (Img): The image to match the colors in.
+        color_thresh_dict (tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]): The color threshold dictionary
+            in the form {state: (lower_bound, upper_bound)}. The state is the value that the pixel
+            is assigned to if the color matches the threshold.
+
+    Returns:
+        Img: The image with the colors matched to the states.
+    """
+
+    hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    matched_img = np.zeros_like(img)
+    for state, (lower_bound, upper_bound) in color_thresh_dict.items():
+        mask = cv.inRange(hsv_img, lower_bound, upper_bound)
+        matched_img[mask == 255] = state
+
+    return matched_img
 
 
 def detect_tiles_states(img: Img, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
