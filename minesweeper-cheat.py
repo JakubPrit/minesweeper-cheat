@@ -24,6 +24,18 @@ BLACK = (0, 0, 0)
 RED = (0, 0, 255)
 
 
+LIGHT_MODE_STATE_HS_COLORS = {
+    1: (240, 100), # V up to 100
+    2: (120, 100), # V up to 47
+    3: (0, 100), # V up to 93
+    4: (240, 100), # V up to 50
+    5: (0, 100), # V up to 50
+    6: (180, 100), # V up to 50
+    7: (0, 0), # V = 0
+    8: (0, 0) # V up to 44
+}
+
+
 class ColorChannel:
     RED = 2
     GREEN = 1
@@ -130,7 +142,7 @@ def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
     return img
 
 
-def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
+def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     """ Detect the tiles in the minefield by detecting the vertical and horizontal edges
         of the tiles. See the detect_edges function for more information on the edge detection
         algorithm. The edges are then processed and filtered by size and distance to find the
@@ -145,45 +157,33 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     """
 
     img = extract_gray(img)
-
     vertical_mask = detect_edges(img, vertical=True, iterations=2)
     horizontal_mask = detect_edges(img, vertical=False, iterations=2)
     edges = horizontal_mask | vertical_mask
 
-    KERNEL1 = np.array([[0, 0, 0],
-                        [1, 1, 1],
-                        [0, 0, 0]], np.uint8)
-    KERNEL2 = np.array([[0, 1, 0],
-                        [0, 1, 0],
-                        [0, 1, 0]], np.uint8)
+    KERNEL1 = np.array([[0, 0, 0], [1, 1, 1], [0, 0, 0]], np.uint8)
+    KERNEL2 = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]], np.uint8)
     HIT_OR_MISS_REPS = 1
     for _ in range(HIT_OR_MISS_REPS):
         hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1)
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
 
-    MIN_REL_SIZE = 0.75
-    MAX_REL_SIZE = 1.3
+    MIN_REL_SIZE, MAX_REL_SIZE = 0.75, 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
-    edges_x, edges_y = [], []
-    sizes = []
+    edges_x, edges_y, sizes = [], [], []
     for cnt in cnts:
         x, y, w, h = cv.boundingRect(cnt)
-        if w > 1 and h > 1:
-            continue
+        if w > 1 and h > 1: continue
         if w > 1: sizes.append(w)
         if h > 1: sizes.append(h)
     median_size = np.median(sizes)
-    min_size = median_size * MIN_REL_SIZE
-    max_size = median_size * MAX_REL_SIZE
+    min_size, max_size = median_size * MIN_REL_SIZE, median_size * MAX_REL_SIZE
     for cnt in cnts:
         x, y, w, h = cv.boundingRect(cnt)
-        if w > 1 and h > 1:
-            continue
-        if min_size <= w <= max_size:
-            edges_y.append(y)
-        if min_size <= h <= max_size:
-            edges_x.append(x)
+        if w > 1 and h > 1: continue
+        if min_size <= w <= max_size: edges_y.append(y)
+        if min_size <= h <= max_size: edges_x.append(x)
 
     sorted_x = np.unique(edges_x)
     sorted_y = np.unique(edges_y)
@@ -194,12 +194,9 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     sorted_x = sorted_x[np.diff(sorted_x, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
     sorted_y = sorted_y[np.diff(sorted_y, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
 
+    CLOSE_THRESHOLD, FAR_THRESHOLD = 0.7, 1.3
     median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
-
-    CLOSE_THRESHOLD = 0.7
-    FAR_THRESHOLD = 1.3
-    min_size = CLOSE_THRESHOLD * median_diff
-    max_size = FAR_THRESHOLD * median_diff
+    min_size, max_size = CLOSE_THRESHOLD * median_diff, FAR_THRESHOLD * median_diff
     while len(sorted_x) > 1 and not (min_size <= (sorted_x[-1] - sorted_x[-2]) <= max_size):
         sorted_x = sorted_x[:-1]
     while len(sorted_y) > 1 and not (min_size <= (sorted_y[-1] - sorted_y[-2]) <= max_size):
@@ -216,8 +213,6 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough suitable edges found
 
-    median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
-
     # // # Debug
     # // if cv.waitKey(1) == ord('d'):
     # //     dbg_img = edges.astype(np.uint8) * 255
@@ -230,7 +225,26 @@ def detect_tiles(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     # //     cv.waitKey(0)
     # //     cv.destroyWindow('debug')
 
+    median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
     return sorted_x, sorted_y, int(median_diff)
+
+
+def detect_tiles_states(img: Img, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
+                        tile_size: int) -> tp.List[tp.List[bool]]:
+    """ Detect the states of the tiles in the minefield. The states are detected by checking
+        the color of the tile. TODO
+
+    Args:
+        img (Img): The image of the minefield.
+        vertical_lines (tp.List[int]): The x-coordinates of the vertical edges of the tiles.
+        horizontal_lines (tp.List[int]): The y-coordinates of the horizontal edges of the tiles.
+        tile_size (int): The size of the tiles.
+
+    Returns:
+        tp.List[tp.List[TileState]]: The states of the tiles.
+    """
+
+    raise NotImplementedError
 
 
 ###################################################################
@@ -329,14 +343,31 @@ class Minesweeper:
         screen = self.get_screen(self.minefield_rect_global)
 
         # Find the grid of tiles
-        self.vertical_lines, self.horizontal_lines, self.tile_size = detect_tiles(screen)
+        self.vertical_lines, self.horizontal_lines, self.tile_size = detect_tiles_grid(screen)
         self.n_cols = len(self.vertical_lines)
         self.n_rows = len(self.horizontal_lines)
         self.is_grid_detected = self.tile_size != -1
 
     # Debug
     def draw_debug_grid(self, screen: Img):
-        pass # TODO
+        """ Draw the detected grid of tiles on the screen image for debugging purposes.
+
+        Args:
+            screen (Img): The screen image to draw on.
+        """
+
+        if self.is_grid_detected:
+            left, top = self.vertical_lines[0], self.horizontal_lines[0]
+            right = self.vertical_lines[-1] + self.tile_size
+            bottom = self.horizontal_lines[-1] + self.tile_size
+            for x in self.vertical_lines:
+                cv.line(screen, (x, top), (x, bottom), RED, 2)
+            cv.line(screen, (right, top), (right, bottom), RED, 2)
+            for y in self.horizontal_lines:
+                cv.line(screen, (left, y), (right, y), RED, 2)
+            cv.line(screen, (left, bottom), (right, bottom), RED, 2)
+        else:
+            print('NO GRID DETECTED')
 
     def _main_loop(self):
         """ The main loop of the program. """
