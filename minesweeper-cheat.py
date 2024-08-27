@@ -14,7 +14,10 @@ from math import isclose
 
 Pos = tp.Tuple[int, int]
 Rect = tp.Tuple[Pos, Pos]
-Img = np.ndarray
+ImgGray = np.ndarray
+ImgBGR = np.ndarray
+ImgHSV = np.ndarray
+ImgBool = np.ndarray
 HSVColor = tp.Tuple[int, int, int]
 
 
@@ -74,6 +77,10 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor]
                          ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
+    HUE_THRESHOLD = 10
+    SATURATION_THRESHOLD = 10
+    VALUE_THRESHOLD = 5
+
     return {
         key: (
             (
@@ -81,18 +88,15 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor]
                 max(0, (color[1] * 255 // 100) - SATURATION_THRESHOLD),
                 max(0, (color[2] * 255 // 100) // 2 - VALUE_THRESHOLD)
             ), (
-                min(101, (color[0] // 2) // 2 + HUE_THRESHOLD),
-                min(101, (color[1] * 255 // 100) + SATURATION_THRESHOLD),
-                min(101, (color[2] * 255 // 100) + VALUE_THRESHOLD)
+                min(180, (color[0] // 2) + HUE_THRESHOLD),
+                min(255, (color[1] * 255 // 100) + SATURATION_THRESHOLD),
+                min(255, (color[2] * 255 // 100) + VALUE_THRESHOLD)
             )
         )
         for key, color in colors.items()
     }
 
 
-HUE_THRESHOLD = 10
-SATURATION_THRESHOLD = 10
-VALUE_THRESHOLD = 5
 LIGHT_MODE_STATE_HSV_THRESHOLDS = colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS)
 DARK_MODE_STATE_HSV_THRESHOLDS = colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS)
 NIGHT_SHIFT_STATE_HSV_THRESHOLDS = colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS)
@@ -108,13 +112,14 @@ class ColorMode(Enum):
     LIGHT = 0
     DARK = 1
     NIGHT_SHIFT = 2
+    UNKNOWN = 3
 
 
 ###################################################################
 #                  MINESWEEPER STATE RECOGNITION                  #
 ###################################################################
 
-def find_minefield(screen: Img) -> Rect:
+def find_minefield(screen: ImgBGR) -> Rect:
     """ Find the minefield in the screen image by detecting the largest rectangle.
 
     Args:
@@ -139,7 +144,7 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
-def extract_gray(img: Img) -> Img:
+def extract_gray(img: ImgBGR, color_mode: ColorMode) -> ImgBGR:
     """ Mask out all non-gray pixels in the image. Gray pixels are defined as pixels
         that have the same value in all three color channels, or pixels that have their blue
         channel value slightly higher than the green channel value and the red channel value
@@ -153,9 +158,14 @@ def extract_gray(img: Img) -> Img:
         Img: The masked image.
     """
 
-    BLACK_THRESHOLD = 20
+    BLACK_THRESHOLD = 15
     WHITE_THRESHOLD = 240
-    DARK_MODE_THRESHOLD = 8 #? Same as in detect_color_mode
+    DARK_MODE_THRESHOLD = 10 #? Same as in detect_color_mode
+
+    if color_mode == ColorMode.LIGHT:
+        WHITE_THRESHOLD = 255
+    elif color_mode in (ColorMode.DARK, ColorMode.NIGHT_SHIFT):
+        BLACK_THRESHOLD = 1
 
     # Handle exactly gray pixels (not blueish)
     #? Same as in detect_color_mode
@@ -168,18 +178,18 @@ def extract_gray(img: Img) -> Img:
              & ((img[:, :, ColorChannel.GREEN] - img[:, :, ColorChannel.RED])
                 <= DARK_MODE_THRESHOLD))
 
-    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    mask &= (img > BLACK_THRESHOLD) & (img < WHITE_THRESHOLD)
+    gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    mask &= (gray_img >= BLACK_THRESHOLD) & (gray_img <= WHITE_THRESHOLD)
 
     img = cv.bitwise_and(img, img, mask=mask.astype(np.uint8))
     return img
 
 
-def detect_color_mode(img: Img) -> ColorMode:
-    DARK_MODE_THRESHOLD = 8 #? Same as in extract_gray
+def detect_color_mode(img: ImgBGR) -> ColorMode:
+    DARK_MODE_THRESHOLD = 10 #? Same as in extract_gray
     LIGHT_DARK_THRESHOLD = 120
 
-    img = extract_gray(img)
+    img = extract_gray(img, ColorMode.UNKNOWN)
 
     #? Same as in extract_gray
     gray_mask = (img[:, :, 0] == img[:, :, 1]) & (img[:, :, 1] == img[:, :, 2])
@@ -195,13 +205,13 @@ def detect_color_mode(img: Img) -> ColorMode:
     gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
     light_mode_mask = gray_img > LIGHT_DARK_THRESHOLD
-    night_shift_mask = (gray_img < LIGHT_DARK_THRESHOLD) & (gray_img != BLACK)
+    night_shift_mask = (gray_img < LIGHT_DARK_THRESHOLD) & (gray_img != 0)
 
     return [ColorMode.LIGHT, ColorMode.DARK, ColorMode.NIGHT_SHIFT][np.argmax(
         [np.mean(mask) for mask in (light_mode_mask, dark_mode_mask, night_shift_mask)])]
 
 
-def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
+def detect_edges(img: ImgGray, vertical: bool, iterations=1) -> ImgBool:
     """ Detect the edges in the image using a custom edge detection algorithm.
         Only detect the edges that are lighter on the right (bottom) side than on the
         left (top) side and are the same color as the pixel above (left). Repeat the process
@@ -238,7 +248,8 @@ def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
     return img
 
 
-def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
+def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
+                      ) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     """ Detect the tiles in the minefield by detecting the vertical and horizontal edges
         of the tiles. See the detect_edges function for more information on the edge detection
         algorithm. The edges are then processed and filtered by size and distance to find the
@@ -252,7 +263,8 @@ def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
             the y-coordinates of the horizontal edges and the size of the tiles.
     """
 
-    img = extract_gray(img)
+    img = cv.cvtColor(extract_gray(img, color_mode), cv.COLOR_BGR2GRAY)
+    cv.imshow('pre edges', img); cv.waitKey(0); cv.destroyWindow('pre edges') #debug
     vertical_mask = detect_edges(img, vertical=True, iterations=2)
     horizontal_mask = detect_edges(img, vertical=False, iterations=2)
     edges = horizontal_mask | vertical_mask
@@ -264,8 +276,9 @@ def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
         hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1)
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
+    cv.imshow('edges', edges.astype(np.uint8)*255); cv.waitKey(0); cv.destroyWindow('edges') #debug
 
-    MIN_REL_SIZE, MAX_REL_SIZE = 0.75, 1.3
+    MIN_REL_SIZE, MAX_REL_SIZE = 0.7, 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
     edges_x, edges_y, sizes = [], [], []
     for cnt in cnts:
@@ -309,23 +322,12 @@ def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough suitable edges found
 
-    # // # Debug
-    # // if cv.waitKey(1) == ord('d'):
-    # //     dbg_img = edges.astype(np.uint8) * 255
-    # //     contours = cv.findContours(dbg_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
-    # //     dbg_img = cv.cvtColor(dbg_img, cv.COLOR_GRAY2BGR)
-    # //     for cnt in contours:
-    # //         x, y, w, h = cv.boundingRect(cnt)
-    # //         cv.rectangle(dbg_img, (x, y), (x + w, y + h), (0, 255, 0), 1)
-    # //     cv.imshow('debug', dbg_img)
-    # //     cv.waitKey(0)
-    # //     cv.destroyWindow('debug')
-
     median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
     return sorted_x, sorted_y, int(median_diff)
 
 
-def match_colors(img: Img, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]) -> Img:
+def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]
+                 ) -> ImgGray:
     """ Match the colors of pixels in the image to the colors in the color threshold dictionary.
 
     Args:
@@ -353,7 +355,7 @@ def match_colors(img: Img, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HS
     return matched_img
 
 
-def detect_tiles_states(img: Img, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
+def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
                         tile_size: int, color_mode: ColorMode) -> tp.List[tp.List[bool]]:
     """ Detect the states of the tiles in the minefield. The states are detected by checking
         the color of the tile. TODO
@@ -393,7 +395,7 @@ class Minesweeper:
         self._setup()
         self._main_loop()
 
-    def get_screen(self, area: tp.Optional[Rect] = None, mask_window: bool = False) -> Img:
+    def get_screen(self, area: tp.Optional[Rect] = None, mask_window: bool = False) -> ImgBGR:
         """ Get the screen image, optionally masking the window of this program with black 
             and/or cropping to a specific area.
 
@@ -430,6 +432,8 @@ class Minesweeper:
 
         self.selection_corner: Pos = (0, 0)
         self.selected_rect: Rect = NONE_RECT
+        self.minefield_rect_in_selection: Rect = NONE_RECT
+        self.minefield_rect_global: Rect = NONE_RECT
 
     def _setup(self):
         """ Initialize the GUI and the state of the program. """
@@ -468,10 +472,11 @@ class Minesweeper:
             top, bottom = bottom, top
         self.selected_rect = ((left, top), (right, bottom))
 
-        screen: Img = self.get_screen(self.selected_rect)
+        screen: ImgBGR = self.get_screen(self.selected_rect)
 
         # Find the color mode
         self.color_mode = detect_color_mode(screen)
+        # // print(self.color_mode) # DEBUG
 
         # Find the minefield in the selection
         self.minefield_rect_in_selection = find_minefield(screen)
@@ -483,13 +488,14 @@ class Minesweeper:
         screen = self.get_screen(self.minefield_rect_global)
 
         # Find the grid of tiles
-        self.vertical_lines, self.horizontal_lines, self.tile_size = detect_tiles_grid(screen)
+        self.vertical_lines, self.horizontal_lines, self.tile_size \
+            = detect_tiles_grid(screen, self.color_mode)
         self.n_cols = len(self.vertical_lines)
         self.n_rows = len(self.horizontal_lines)
         self.is_grid_detected = self.tile_size != -1
 
     # Debug
-    def draw_debug_grid(self, screen: Img):
+    def draw_debug_grid(self, screen: ImgBGR):
         """ Draw the detected grid of tiles on the screen image for debugging purposes.
 
         Args:
@@ -522,21 +528,6 @@ class Minesweeper:
                 self.draw_debug_grid(screen)
                 detect_tiles_states(screen, self.vertical_lines, self.horizontal_lines,
                                     self.tile_size, self.color_mode)
-
-            # // # Detect the grid and tiles
-            # // # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
-            # // vertical_lines, horizontal_lines, tile_size = detect_tiles(screen)
-
-            # // # debug
-            # // # print(vertical_lines, horizontal_lines, tile_size)
-            # // screen = extract_gray(screen)
-            # // # Set all non-masked pixels to last masked color left of them
-            # // for x in vertical_lines:
-            # //     cv.line(screen, (x, 0), (x, screen.shape[0]), (0, 0, 255), 2)
-            # // for y in horizontal_lines:
-            # //     cv.line(screen, (0, y), (screen.shape[1], y), (0, 0, 255), 2)
-            # // cv.rectangle(screen, (0, 0), (tile_size, tile_size), (255, 0, 0), 2)
-
 
             # Show the screen
             cv.imshow(WINDOW_NAME, screen)
