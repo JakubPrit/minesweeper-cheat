@@ -31,74 +31,83 @@ FLAGGED = 10
 UNMATCHED = 255
 
 
-# HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
+# HSV input format: hue in [0, 360], saturation in [0, 100], value in [0, 100]
 LIGHT_MODE_STATE_HSV_COLORS = {
     0: (0, 0, 78),
-    1: (120, 100, 100),
-    2: (60, 100, 47),
+    1: (240, 100, 100),
+    2: (120, 100, 47),
     3: (0, 100, 93),
-    4: (120, 100, 50),
+    4: (240, 100, 50),
     5: (0, 100, 50),
-    6: (90, 100, 50),
+    6: (180, 100, 50),
     7: (0, 0, 0),
     8: (0, 0, 44),
     UNCLICKED: (0, 0, 78),
 }
 DARK_MODE_STATE_HSV_COLORS = {
-    0: (105, 22, 28),
-    1: (103, 51, 100),
-    2: (60, 47, 75),
-    3: (176, 53, 100),
-    4: (145, 47, 100),
-    5: (22, 85, 87),
-    6: (90, 50, 80),
+    0: (210, 22, 28),
+    1: (206, 51, 100),
+    2: (120, 47, 75),
+    3: (352, 53, 100),
+    4: (291, 47, 100),
+    5: (44, 85, 87),
+    6: (180, 50, 80),
     7: (0, 0, 60),
-    8: (105, 7, 88),
+    8: (210, 7, 88),
     UNCLICKED: (210, 18, 35),
 }
 NIGHT_SHIFT_STATE_HSV_COLORS = {
     0: (0, 0, 20),
-    1: (105, 54, 87),
-    2: (60, 50, 63),
-    3: (175, 50, 80),
-    4: (140, 46, 87),
-    5: (27, 100, 67),
-    6: (90, 50, 67),
+    1: (210, 54, 87),
+    2: (120, 50, 63),
+    3: (350, 50, 80),
+    4: (280, 46, 87),
+    5: (54, 100, 67),
+    6: (180, 50, 67),
     7: (0, 0, 60),
     8: (0, 0, 80),
     UNCLICKED: (0, 0, 27),
 }
 
+
+def colors_to_thresholds(colors: tp.Dict[int, HSVColor]
+                         ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
+    # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
+
+    return {
+        key: (
+            (
+                max(0, (color[0] // 2) - HUE_THRESHOLD),
+                max(0, (color[1] * 255 // 100) - SATURATION_THRESHOLD),
+                max(0, (color[2] * 255 // 100) // 2 - VALUE_THRESHOLD)
+            ), (
+                min(101, (color[0] // 2) // 2 + HUE_THRESHOLD),
+                min(101, (color[1] * 255 // 100) + SATURATION_THRESHOLD),
+                min(101, (color[2] * 255 // 100) + VALUE_THRESHOLD)
+            )
+        )
+        for key, color in colors.items()
+    }
+
+
 HUE_THRESHOLD = 10
 SATURATION_THRESHOLD = 10
 VALUE_THRESHOLD = 5
-LIGHT_MODE_STATE_HSV_THRESHOLDS = {
-    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
-           max(0, color[2] // 2 - VALUE_THRESHOLD)),
-          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
-           min(100, color[2] + VALUE_THRESHOLD)))
-    for key, color in LIGHT_MODE_STATE_HSV_COLORS.items()
-}
-DARK_MODE_STATE_HSV_THRESHOLDS = {
-    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
-           max(0, color[2] // 2 - VALUE_THRESHOLD)),
-          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
-           min(100, color[2] + VALUE_THRESHOLD)))
-    for key, color in DARK_MODE_STATE_HSV_COLORS.items()
-}
-NIGHT_SHIFT_STATE_HSV_THRESHOLDS = {
-    key: ((color[0] - HUE_THRESHOLD, color[1] - SATURATION_THRESHOLD,
-           max(0, color[2] // 2 - VALUE_THRESHOLD)),
-          (color[0] + HUE_THRESHOLD, color[1] + SATURATION_THRESHOLD,
-           min(100, color[2] + VALUE_THRESHOLD)))
-    for key, color in NIGHT_SHIFT_STATE_HSV_COLORS.items()
-}
+LIGHT_MODE_STATE_HSV_THRESHOLDS = colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS)
+DARK_MODE_STATE_HSV_THRESHOLDS = colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS)
+NIGHT_SHIFT_STATE_HSV_THRESHOLDS = colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS)
 
 
 class ColorChannel:
     RED = 2
     GREEN = 1
     BLUE = 0
+
+
+class ColorMode(Enum):
+    LIGHT = 0
+    DARK = 1
+    NIGHT_SHIFT = 2
 
 
 ###################################################################
@@ -130,7 +139,7 @@ def find_minefield(screen: Img) -> Rect:
     return best_rect
 
 
-def extract_gray(bgr_img: Img) -> Img:
+def extract_gray(img: Img) -> Img:
     """ Mask out all non-gray pixels in the image. Gray pixels are defined as pixels
         that have the same value in all three color channels, or pixels that have their blue
         channel value slightly higher than the green channel value and the red channel value
@@ -144,24 +153,52 @@ def extract_gray(bgr_img: Img) -> Img:
         Img: The masked image.
     """
 
-    BLACK_WHITE_THRESHOLD = 100
-    DARK_MODE_THRESHOLD = 8
+    BLACK_THRESHOLD = 20
+    WHITE_THRESHOLD = 240
+    DARK_MODE_THRESHOLD = 8 #? Same as in detect_color_mode
 
     # Handle exactly gray pixels (not blueish)
-    mask = (bgr_img[:, :, 0] == bgr_img[:, :, 1]) & (bgr_img[:, :, 1] == bgr_img[:, :, 2])
+    #? Same as in detect_color_mode
+    mask = (img[:, :, 0] == img[:, :, 1]) & (img[:, :, 1] == img[:, :, 2])
 
     # Handle blueish (dark mode) pixels
-    mask |= (((bgr_img[:, :, ColorChannel.BLUE] - bgr_img[:, :, ColorChannel.GREEN])
+    #? Same as in detect_color_mode
+    mask |= (((img[:, :, ColorChannel.BLUE] - img[:, :, ColorChannel.GREEN])
               <= DARK_MODE_THRESHOLD)
-             & ((bgr_img[:, :, ColorChannel.GREEN] - bgr_img[:, :, ColorChannel.RED])
+             & ((img[:, :, ColorChannel.GREEN] - img[:, :, ColorChannel.RED])
                 <= DARK_MODE_THRESHOLD))
 
-    bgr_img = cv.cvtColor(bgr_img, cv.COLOR_BGR2GRAY)
-    avg_color = np.mean(bgr_img[mask])
-    mask &= (np.abs(bgr_img - avg_color) < BLACK_WHITE_THRESHOLD)
+    img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    mask &= (img > BLACK_THRESHOLD) & (img < WHITE_THRESHOLD)
 
-    bgr_img = cv.bitwise_and(bgr_img, bgr_img, mask=mask.astype(np.uint8))
-    return bgr_img
+    img = cv.bitwise_and(img, img, mask=mask.astype(np.uint8))
+    return img
+
+
+def detect_color_mode(img: Img) -> ColorMode:
+    DARK_MODE_THRESHOLD = 8 #? Same as in extract_gray
+    LIGHT_DARK_THRESHOLD = 120
+
+    img = extract_gray(img)
+
+    #? Same as in extract_gray
+    gray_mask = (img[:, :, 0] == img[:, :, 1]) & (img[:, :, 1] == img[:, :, 2])
+
+    #? Same as in extract_gray
+    dark_mode_mask = (
+        ((img[:, :, ColorChannel.BLUE] - img[:, :, ColorChannel.GREEN])
+         <= DARK_MODE_THRESHOLD)
+        & ((img[:, :, ColorChannel.GREEN] - img[:, :, ColorChannel.RED])
+           <= DARK_MODE_THRESHOLD))
+    dark_mode_mask &= ~gray_mask
+
+    gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+
+    light_mode_mask = gray_img > LIGHT_DARK_THRESHOLD
+    night_shift_mask = (gray_img < LIGHT_DARK_THRESHOLD) & (gray_img != BLACK)
+
+    return [ColorMode.LIGHT, ColorMode.DARK, ColorMode.NIGHT_SHIFT][np.argmax(
+        [np.mean(mask) for mask in (light_mode_mask, dark_mode_mask, night_shift_mask)])]
 
 
 def detect_edges(img: Img, vertical: bool, iterations=1) -> Img:
@@ -288,30 +325,36 @@ def detect_tiles_grid(img: Img) -> tp.Tuple[tp.List[int], tp.List[int], int]:
     return sorted_x, sorted_y, int(median_diff)
 
 
-def match_color(img: Img, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]) -> Img:
-    """ Match the color of the pixel in the image to the colors in the color threshold dictionary.
+def match_colors(img: Img, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]) -> Img:
+    """ Match the colors of pixels in the image to the colors in the color threshold dictionary.
 
     Args:
-        img (Img): The image to match the colors in.
-        color_thresh_dict (tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]): The color threshold dictionary
-            in the form {state: (lower_bound, upper_bound)}. The state is the value that the pixel
-            is assigned to if the color matches the threshold.
+        img (Img): The image to match the colors in. Should be in standard BGR format.
+        color_thresh_dict (tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]): The color threshold
+            dictionary in the form {state: (lower_bound, upper_bound)}. The state is the value
+            that the pixel is assigned to if the color matches the threshold.
 
     Returns:
         Img: The image with the colors matched to the states.
     """
 
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-    matched_img = np.zeros_like(img)
+    cv.imshow('debug orig', cv.cvtColor(hsv_img, cv.COLOR_HSV2BGR)); cv.waitKey(0); cv.destroyWindow('debug orig')
+    matched_img = np.full_like(img, UNMATCHED)
+    total_mask = np.zeros(np.shape(hsv_img)[:2], bool)
     for state, (lower_bound, upper_bound) in color_thresh_dict.items():
         mask = cv.inRange(hsv_img, lower_bound, upper_bound)
-        matched_img[mask == 255] = state
+        cv.imshow('debug{}'.format(state), mask); cv.waitKey(0); cv.destroyWindow('debug{}'.format(state))
+        mask = mask.astype(bool)
+        matched_img[mask] = state
+        total_mask |= mask
+    cv.imshow('debug all', total_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('debug all')
 
     return matched_img
 
 
 def detect_tiles_states(img: Img, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
-                        tile_size: int) -> tp.List[tp.List[bool]]:
+                        tile_size: int, color_mode: ColorMode) -> tp.List[tp.List[bool]]:
     """ Detect the states of the tiles in the minefield. The states are detected by checking
         the color of the tile. TODO
 
@@ -324,6 +367,19 @@ def detect_tiles_states(img: Img, vertical_lines: tp.List[int], horizontal_lines
     Returns:
         tp.List[tp.List[TileState]]: The states of the tiles.
     """
+
+    all_thresholds = {
+        ColorMode.LIGHT : LIGHT_MODE_STATE_HSV_THRESHOLDS,
+        ColorMode.DARK : DARK_MODE_STATE_HSV_THRESHOLDS,
+        ColorMode.NIGHT_SHIFT : NIGHT_SHIFT_STATE_HSV_THRESHOLDS
+    }
+
+    # DEBUG
+    dbg_img = match_colors(img, all_thresholds[color_mode])
+    cv.imshow('dbg', dbg_img)
+    cv.waitKey(0)
+    cv.destroyWindow('dbg')
+    return [[]]
 
     raise NotImplementedError
 
@@ -414,6 +470,9 @@ class Minesweeper:
 
         screen: Img = self.get_screen(self.selected_rect)
 
+        # Find the color mode
+        self.color_mode = detect_color_mode(screen)
+
         # Find the minefield in the selection
         self.minefield_rect_in_selection = find_minefield(screen)
         (s_left, s_top), (s_right, s_bottom) = self.selected_rect
@@ -461,6 +520,8 @@ class Minesweeper:
             else:
                 screen = self.get_screen(self.minefield_rect_global)
                 self.draw_debug_grid(screen)
+                detect_tiles_states(screen, self.vertical_lines, self.horizontal_lines,
+                                    self.tile_size, self.color_mode)
 
             # // # Detect the grid and tiles
             # // # TODO: Don't do this every frame, just in handle_selected_rect_change, THIS IS JUST FOR TESTING
