@@ -86,13 +86,15 @@ class ColorMode(Enum):
     UNKNOWN = 3
 
 
-def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int
-                                   ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
+def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thresholds
+                         ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
     HUE_THRESHOLD = 10
     SATURATION_THRESHOLD = 10
     VALUE_THRESHOLD = 5
+    if no_thresholds:
+        HUE_THRESHOLD = SATURATION_THRESHOLD = VALUE_THRESHOLD = 0
 
     return {
         key: (
@@ -110,8 +112,8 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int
     }
 
 
-def state_thresholds(color_mode: ColorMode, brightness: int
-                     ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
+def state_thresholds(color_mode: ColorMode, brightness: int,
+                     no_thresholds: bool = False) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
     """ Get the color thresholds for the states of the tiles in the minefield
         for the given color mode and brightness.
 
@@ -124,11 +126,11 @@ def state_thresholds(color_mode: ColorMode, brightness: int
     """
 
     if color_mode == ColorMode.LIGHT:
-        return colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness, no_thresholds)
     elif color_mode == ColorMode.DARK:
-        return colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness, no_thresholds)
     elif color_mode == ColorMode.NIGHT_SHIFT:
-        return colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness, no_thresholds)
     else:
         raise ValueError('{} is not supported'.format(color_mode))
 
@@ -371,7 +373,7 @@ def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor,
     """
 
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-    matched_img = np.full_like(img, UNMATCHED)
+    matched_img = np.full(np.shape(hsv_img)[:2], UNMATCHED, np.uint8)
     total_mask = np.zeros(np.shape(hsv_img)[:2], bool)
     for state, (lower_bound, upper_bound) in color_thresh_dict.items():
         mask = cv.inRange(hsv_img, lower_bound, upper_bound)
@@ -385,10 +387,49 @@ def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor,
 
 
 def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
-    thresholds = state_thresholds(color_mode, 100)
-    thresholds = {UNCLICKED: thresholds[UNCLICKED], EMPTY: thresholds[EMPTY]}
+    """ Get the brightness of the screen image. The brightness is calculated by finding the
+        unclicked and empty tiles in the minefield and calculating the average brightness of
+        the pixels in the tiles, then comparing the brightness of the tiles to the maximum
+        brightness of the tiles in the color mode and averaging the two.
+
+        Args:
+            img (ImgBGR): The image to get the brightness of. Has to be in BGR format.
+            color_mode (ColorMode): The color mode of the image.
+
+        Returns:
+            int: The brightness of the screen image in [0, 100].
+    """
+
+    thresholds_high = state_thresholds(color_mode, 100)
+    thresholds_low = state_thresholds(color_mode, 50)
+    thresholds = {UNCLICKED: (thresholds_low[UNCLICKED][0], thresholds_high[UNCLICKED][1]),
+                  EMPTY: (thresholds_low[EMPTY][0], thresholds_high[EMPTY][1])}
     matched_img = match_colors(img, thresholds)
-    #todo
+    unclicked_mask = matched_img == UNCLICKED
+    empty_mask = matched_img == EMPTY
+    hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+
+    real_max_colors = state_thresholds(color_mode, 100, no_thresholds=True)
+    MASK_THRESHOLD = .2
+    if np.mean(unclicked_mask) > MASK_THRESHOLD:
+        unclicked_median_value = np.median(hsv_img[unclicked_mask][:, 2])
+    else:
+        unclicked_median_value = -1
+    unclicked_brightness = unclicked_median_value / real_max_colors[UNCLICKED][1][2]
+    if np.mean(empty_mask) > MASK_THRESHOLD:
+        empty_median_value = np.median(hsv_img[empty_mask][:, 2])
+    else:
+        empty_median_value = -1
+    empty_brightness = empty_median_value / real_max_colors[EMPTY][1][2]
+
+    if unclicked_brightness < 0 and empty_brightness < 0:
+        raise ValueError('Not enough unclicked or empty tiles found')
+
+    return int(max(0, min(1,
+                      np.mean([brightness for brightness in
+                               (unclicked_brightness, empty_brightness)
+                               if brightness > 0])
+    )) * 100)
 
 
 def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
@@ -505,9 +546,11 @@ class Minesweeper:
 
         screen: ImgBGR = self.get_screen(self.selected_rect)
 
-        # Find the color mode
+        # Find the color mode and the brightness of the screen
         self.color_mode = detect_color_mode(screen)
         print(self.color_mode) # DEBUG
+        self.brightness = get_brightness(screen, self.color_mode)
+        print(self.brightness)
 
         # Find the minefield in the selection
         self.minefield_rect_in_selection = find_minefield(screen)
@@ -558,7 +601,7 @@ class Minesweeper:
                 screen = self.get_screen(self.minefield_rect_global)
                 self.draw_debug_grid(screen)
                 detect_tiles_states(screen, self.vertical_lines, self.horizontal_lines,
-                                    self.tile_size, self.color_mode)
+                                    self.tile_size, self.color_mode, 100) # debug brightness
 
             # Show the screen
             cv.imshow(WINDOW_NAME, screen)
