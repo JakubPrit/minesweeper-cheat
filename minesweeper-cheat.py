@@ -86,7 +86,7 @@ class ColorMode(Enum):
     UNKNOWN = 3
 
 
-def _internal_colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int
+def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int
                                    ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
@@ -124,11 +124,11 @@ def state_thresholds(color_mode: ColorMode, brightness: int
     """
 
     if color_mode == ColorMode.LIGHT:
-        return _internal_colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness)
     elif color_mode == ColorMode.DARK:
-        return _internal_colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness)
     elif color_mode == ColorMode.NIGHT_SHIFT:
-        return _internal_colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness)
+        return colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness)
     else:
         raise ValueError('{} is not supported'.format(color_mode))
 
@@ -371,7 +371,6 @@ def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor,
     """
 
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-    # // cv.imshow('debug orig', cv.cvtColor(hsv_img, cv.COLOR_HSV2BGR)); cv.waitKey(0); cv.destroyWindow('debug orig')
     matched_img = np.full_like(img, UNMATCHED)
     total_mask = np.zeros(np.shape(hsv_img)[:2], bool)
     for state, (lower_bound, upper_bound) in color_thresh_dict.items():
@@ -385,8 +384,16 @@ def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor,
     return matched_img
 
 
+def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
+    thresholds = state_thresholds(color_mode, 100)
+    thresholds = {UNCLICKED: thresholds[UNCLICKED], EMPTY: thresholds[EMPTY]}
+    matched_img = match_colors(img, thresholds)
+    #todo
+
+
 def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
-                        tile_size: int, color_mode: ColorMode) -> tp.List[tp.List[bool]]:
+                        tile_size: int, color_mode: ColorMode, brightness: int
+                        ) -> tp.List[tp.List[bool]]:
     """ Detect the states of the tiles in the minefield. The states are detected by checking
         the color of the tile. TODO
 
@@ -400,14 +407,9 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
             tp.List[tp.List[TileState]]: The states of the tiles.
     """
 
-    all_thresholds = {
-        ColorMode.LIGHT : state_thresholds(ColorMode.LIGHT, 100),
-        ColorMode.DARK : DARK_MODE_STATE_HSV_THRESHOLDS,
-        ColorMode.NIGHT_SHIFT : NIGHT_SHIFT_STATE_HSV_THRESHOLDS
-    }
 
     # DEBUG
-    dbg_img = match_colors(img, all_thresholds[color_mode])
+    dbg_img = match_colors(img, state_thresholds(color_mode, brightness))
     cv.imshow('dbg', dbg_img)
     cv.waitKey(0)
     cv.destroyWindow('dbg')
