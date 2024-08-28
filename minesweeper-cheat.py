@@ -29,9 +29,10 @@ ImgBGR = np.ndarray
 ImgHSV = np.ndarray
 ImgBool = np.ndarray
 HSVColor = tp.Tuple[int, int, int]
-TileState = int
 Uint8_2D = np.ndarray
 Thresholds = tp.Dict[int, tp.Tuple[tp.Tuple[HSVColor, HSVColor], ...]]
+RectGrid = tp.List[tp.List[Rect]]
+GridState = np.ndarray
 
 
 # HSV input format: hue in [0, 360], saturation in [0, 100], value in [0, 100]
@@ -57,7 +58,7 @@ DARK_MODE_STATE_HSV_COLORS = {
     6: (180, 50, 80),
     7: (0, 0, 60),
     8: (210, 7, 88),
-    UNCLICKED: (210, 18, 35),
+    UNCLICKED: (210, 18, 36),
 }
 NIGHT_SHIFT_STATE_HSV_COLORS = {
     0: (0, 0, 20),
@@ -90,13 +91,13 @@ class ColorMode(Enum):
 #                  MINESWEEPER STATE RECOGNITION                  #
 ###################################################################
 
-def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thresholds
-                         ) -> Thresholds:
+def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int,
+                         no_thresholds: bool, value_threshold: int) -> Thresholds:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
     HUE_THRESHOLD = 10
     SATURATION_THRESHOLD = 10
-    VALUE_THRESHOLD = 5
+    VALUE_THRESHOLD = value_threshold
     if no_thresholds:
         HUE_THRESHOLD = SATURATION_THRESHOLD = VALUE_THRESHOLD = 0
 
@@ -122,24 +123,31 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thr
 
 
 def state_thresholds(color_mode: ColorMode, brightness: int,
-                     no_thresholds: bool = False) -> Thresholds:
+                     no_thresholds: bool = False,
+                     value_threshold: int = 10) -> Thresholds:
     """ Get the color thresholds for the states of the tiles in the minefield
         for the given color mode and brightness.
 
         Args:
             color_mode (ColorMode): The color mode of the game. Can't be ColorMode.UNKNOWN.
-            brightness (int): The brightness of the screen. In [0, 100].
+            brightness (int): The brightness of the screen. In [50, 100].
+            no_thresholds (bool, optional): Whether to use no thresholds. Defaults to False.
+            value_threshold (int, optional): The threshold for the value of the colors.
+                Defaults to 10.
 
         Returns:
             Thresholds: The color thresholds for the states.
     """
 
     if color_mode == ColorMode.LIGHT:
-        return colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness, no_thresholds)
+        return colors_to_thresholds(LIGHT_MODE_STATE_HSV_COLORS, brightness,
+                                    no_thresholds, value_threshold)
     elif color_mode == ColorMode.DARK:
-        return colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness, no_thresholds)
+        return colors_to_thresholds(DARK_MODE_STATE_HSV_COLORS, brightness,
+                                    no_thresholds, value_threshold)
     elif color_mode == ColorMode.NIGHT_SHIFT:
-        return colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness, no_thresholds)
+        return colors_to_thresholds(NIGHT_SHIFT_STATE_HSV_COLORS, brightness,
+                                    no_thresholds, value_threshold)
     else:
         raise ValueError('{} is not supported'.format(color_mode))
 
@@ -157,12 +165,12 @@ def find_minefield(screen: ImgBGR) -> Rect:
     edges = cv.Canny(screen, 50, 150)
     contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
-    # debug
-    # cv.imshow('edges', edges); cv.waitKey(0); cv.destroyWindow('edges')
-    # screen_copy = screen.copy()
-    # cv.drawContours(screen_copy, contours, -1, RED, 2)
-    # cv.imshow('contours', screen_copy); cv.waitKey(0); cv.destroyWindow('contours')
-    # debug end
+    # // debug block start
+    # // cv.imshow('edges', edges); cv.waitKey(0); cv.destroyWindow('edges')
+    # // screen_copy = screen.copy()
+    # // cv.drawContours(screen_copy, contours, -1, RED, 2)
+    # // cv.imshow('contours', screen_copy); cv.waitKey(0); cv.destroyWindow('contours')
+    # // debug block end
 
     minefield_area = 0
     best_rect = ((0, 0), (0, 0))
@@ -321,18 +329,16 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
 
-    # debug
-    # cv.imshow('edges', edges.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('edges')
-    # debug end
+    # // cv.imshow('edges', edges.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('edges') # debug
 
     MIN_REL_SIZE, MAX_REL_SIZE = 0.7, 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
 
-    # debug
-    # img_copy = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-    # cv.drawContours(img_copy, cnts, -1, RED, 2)
-    # cv.imshow('contours', img_copy); cv.waitKey(0); cv.destroyWindow('contours')
-    # debug end
+    # // debug block start
+    # // img_copy = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
+    # // cv.drawContours(img_copy, cnts, -1, RED, 2)
+    # // cv.imshow('contours', img_copy); cv.waitKey(0); cv.destroyWindow('contours')
+    # // debug block end
 
     edges_x, edges_y, sizes = [], [], []
     for cnt in cnts:
@@ -405,7 +411,7 @@ def match_colors(img: ImgBGR, color_thresh_dict: Thresholds,
         # mask = cv.inRange(hsv_img, lower_bound, upper_bound)
         mask = np.bitwise_or.reduce([cv.inRange(hsv_img, lower_bound, upper_bound)
                                      for lower_bound, upper_bound in bounds])
-        cv.imshow('debug{}'.format(state), mask); cv.waitKey(0); cv.destroyWindow('debug{}'.format(state))
+        # // cv.imshow('debug{}'.format(state), mask); cv.waitKey(0); cv.destroyWindow('debug{}'.format(state)) # debug
         mask = mask.astype(bool)
         matched_img[mask & ~total_mask] = state
         colliding_mask = np.bitwise_and(mask, total_mask)
@@ -426,7 +432,7 @@ def match_colors(img: ImgBGR, color_thresh_dict: Thresholds,
     return matched_img
 
 
-def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
+def get_brightness(img: ImgBGR, color_mode: ColorMode, guess: int = 75) -> int:
     """ Get the brightness of the screen image. The brightness is calculated by finding the
         unclicked and empty tiles in the minefield and calculating the average brightness of
         the pixels in the tiles, then comparing the brightness of the tiles to the maximum
@@ -435,15 +441,18 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
         Args:
             img (ImgBGR): The image to get the brightness of. Has to be in BGR format.
             color_mode (ColorMode): The color mode of the image.
+            guess (int, optional): The guess of the brightness of the screen. In [50, 100].
+                Defaults to 75.
 
         Returns:
             int: The brightness of the screen image in [0, 100].
     """
 
-    thresholds_high = state_thresholds(color_mode, 100)
-    thresholds_low = state_thresholds(color_mode, 50)
+    thresholds_high = state_thresholds(color_mode, 100, value_threshold=1)
+    thresholds_low = state_thresholds(color_mode, 50, value_threshold=1)
+    real_mid_colors = state_thresholds(color_mode, guess, no_thresholds=True)
     real_max_colors = state_thresholds(color_mode, 100, no_thresholds=True)
-    expected_state_values = {state: real_max_colors[state][0][0][2] for state in real_max_colors}
+    expected_state_values = {state: real_mid_colors[state][0][0][2] for state in real_mid_colors}
 
     thresholds: Thresholds = {}
     for state in (UNCLICKED, EMPTY):
@@ -462,13 +471,13 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
     empty_mask = matched_img == EMPTY
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
 
-    # debug
+    # debug block start
     print(thresholds)
     cv.imshow('unclicked', unclicked_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('unclicked')
     cv.imshow('empty', empty_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('empty')
-    # debug end
+    # debug block end
 
-    MASK_THRESHOLD = .25
+    MASK_THRESHOLD = .2
     if np.mean(unclicked_mask) > MASK_THRESHOLD:
         unclicked_median_value = np.median(hsv_img[unclicked_mask][:, 2])
     else:
@@ -479,50 +488,43 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
     else:
         empty_median_value = -1
     empty_brightness = empty_median_value / real_max_colors[EMPTY][0][1][2]
-    print(np.mean(unclicked_mask), np.mean(empty_mask), unclicked_brightness, empty_brightness) # DEBUG
+    # // print(np.mean(unclicked_mask), np.mean(empty_mask), unclicked_brightness, empty_brightness) # DEBUG
 
     if unclicked_brightness < 0 and empty_brightness < 0:
         raise ValueError('Not enough unclicked or empty tiles found')
 
-    return int(max(0, min(1,
+    brightness = int(max(0, min(1,
                       np.mean([brightness for brightness in
                                (unclicked_brightness, empty_brightness)
                                if brightness > 0])
     )) * 100)
+    print(brightness) # DEBUG
+    return brightness
 
 
-def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_lines: tp.List[int],
-                        tile_size: int, color_mode: ColorMode, brightness: int
-                        ) -> tp.List[tp.List[bool]]:
+def detect_tiles_states(img: ImgBGR, rect_grid: RectGrid, color_mode: ColorMode,
+                        brightness: int) -> GridState:
     """ Detect the states of the tiles in the minefield. The states are detected by checking
         the color of the tile. TODO
 
         Args:
             img (ImgBGR): The image of the minefield. Has to be in BGR format.
-            vertical_lines (tp.List[int]): The x-coordinates of the vertical edges of the tiles.
-            horizontal_lines (tp.List[int]): The y-coordinates of the horizontal edges of the tiles.
-            tile_size (int): The size of the tiles.
+            rect_grid (RectGrid): The grid of the rectangles of the tiles.
+            color_mode (ColorMode): The color mode of the image.
+            brightness (int): The brightness of the screen. In [50, 100].
 
         Returns:
-            tp.List[tp.List[TileState]]: The states of the tiles.
+            GridState: The states of the tiles.
     """
 
-    x = vertical_lines + [vertical_lines[-1] + tile_size]
-    y = horizontal_lines + [horizontal_lines[-1] + tile_size]
-    n_cols, n_rows = len(vertical_lines), len(horizontal_lines)
-    # print(n_cols, n_rows, len(x), len(y)) # DEBUG
+    n_rows, n_cols = len(rect_grid), len(rect_grid[0])
     grid: Uint8_2D = np.ndarray((n_rows, n_cols), np.uint8)
-    rect_grid = [
-        [
-            ((x[c], y[r]), (x[c+1], y[r+1])) for c in range(n_cols)
-        ] for r in range(n_rows)
-    ]
 
     expected_colors = state_thresholds(color_mode, brightness, no_thresholds=True)
     expected_state_values = {state: expected_colors[state][0][0][2] for state in expected_colors}
     matched: ImgGray = match_colors(img, state_thresholds(color_mode, brightness),
                                     expected_state_values)
-    cv.imshow('dbg', matched); cv.waitKey(0); cv.destroyWindow('dbg') # debug
+    # // cv.imshow('dbg', matched); cv.waitKey(0); cv.destroyWindow('dbg') # debug
 
     STATE_THRESHOLD = 0.1
     for r in range(n_rows):
@@ -536,18 +538,7 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
                      else np.argmax(counts))
             grid[r, c] = state
 
-    # debug
-    # print(rect_grid) # DEBUG
-    # print(x, y) # DEBUG
-    dbg_img = img.copy()
-    for r in range(n_rows):
-        for c in range(n_cols):
-            pos = (rect_grid[r][c][0][0] + int(tile_size / 5), rect_grid[r][c][0][1] + int(tile_size * 0.8))
-            cv.putText(dbg_img, str(grid[r, c]), pos, cv.FONT_HERSHEY_SIMPLEX, 0.5, RED, 2)
-    cv.imshow('dbg', dbg_img); cv.waitKey(0); cv.destroyWindow('dbg')
-    # debug end
-
-    raise NotImplementedError
+    return grid
 
 
 ###################################################################
@@ -647,10 +638,13 @@ class Minesweeper:
         screen = self.get_screen(self.minefield_rect_global)
 
         # Find the color mode and the brightness of the screen
+        BRIGHTNESS_RETRIES = 5
         self.color_mode = detect_color_mode(screen)
         print(self.color_mode) # DEBUG
-        self.brightness = get_brightness(screen, self.color_mode)
-        print(self.brightness)
+        brightness = get_brightness(screen, self.color_mode)
+        for _ in range(BRIGHTNESS_RETRIES):
+            brightness = get_brightness(screen, self.color_mode, brightness)
+        self.brightness = brightness
 
         # Find the grid of tiles
         self.vertical_lines, self.horizontal_lines, self.tile_size \
@@ -658,6 +652,18 @@ class Minesweeper:
         self.n_cols = len(self.vertical_lines)
         self.n_rows = len(self.horizontal_lines)
         self.is_grid_detected = self.tile_size != -1
+
+        # Create the grid of rectangles of the tiles
+        x = self.vertical_lines + [self.vertical_lines[-1] + self.tile_size]
+        y = self.horizontal_lines + [self.horizontal_lines[-1] + self.tile_size]
+        n_cols, n_rows = len(self.vertical_lines), len(self.horizontal_lines)
+        # // print(n_cols, n_rows, len(x), len(y)) # DEBUG
+        self.rect_grid = [
+            [
+                ((x[c], y[r]), (x[c+1], y[r+1])) for c in range(n_cols)
+            ] for r in range(n_rows)
+        ]
+
 
     # Debug
     def draw_debug_grid(self, screen: ImgBGR):
@@ -677,6 +683,11 @@ class Minesweeper:
             for y in self.horizontal_lines:
                 cv.line(screen, (left, y), (right, y), RED, 2)
             cv.line(screen, (left, bottom), (right, bottom), RED, 2)
+            for r in range(self.n_rows):
+                for c in range(self.n_cols):
+                    pos = (self.rect_grid[r][c][0][0] + int(self.tile_size / 5),
+                           self.rect_grid[r][c][0][1] + int(self.tile_size * 0.8))
+                    cv.putText(screen, str(self.grid[r, c]), pos, cv.FONT_HERSHEY_SIMPLEX, 0.5, RED, 2)
         else:
             print('NO GRID DETECTED')
 
@@ -686,13 +697,14 @@ class Minesweeper:
         target_delta_time = 1e9 / MAX_FPS
         prev_time = time_ns()
         while True:
-            if self.selected_rect == NONE_RECT:
+            if not self.is_grid_detected:
                 screen = self.get_screen(mask_window=True)
             else:
                 screen = self.get_screen(self.minefield_rect_global)
+                self.brightness = get_brightness(screen, self.color_mode)
+                self.grid = detect_tiles_states(screen, self.rect_grid,
+                                                self.color_mode, self.brightness)
                 self.draw_debug_grid(screen) # debug
-                detect_tiles_states(screen, self.vertical_lines, self.horizontal_lines,
-                                    self.tile_size, self.color_mode, self.brightness)
 
             # Show the screen
             cv.imshow(WINDOW_NAME, screen)
