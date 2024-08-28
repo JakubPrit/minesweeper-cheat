@@ -131,7 +131,7 @@ def state_thresholds(color_mode: ColorMode, brightness: int,
             brightness (int): The brightness of the screen. In [0, 100].
 
         Returns:
-            tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]: The color thresholds for the states.
+            Thresholds: The color thresholds for the states.
     """
 
     if color_mode == ColorMode.LIGHT:
@@ -380,15 +380,19 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
     return list(sorted_x), list(sorted_y), int(median_diff)
 
 
-def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]
-                 ) -> ImgGray:
+def match_colors(img: ImgBGR, color_thresh_dict: Thresholds,
+                 expected_state_values: tp.Dict[int, int]) -> ImgGray:
     """ Match the colors of pixels in the image to the colors in the color threshold dictionary.
 
         Args:
             img (ImgBGR): The image to match the colors in. Has to be in BGR format.
-            color_thresh_dict (tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]): The color threshold
-                dictionary in the form {state: (lower_bound, upper_bound)}. The state is the value
-                that the pixel is assigned to if the color matches the threshold.
+            color_thresh_dict (Thresholds): The color threshold dictionary in the form
+                {state: [(lower_bound, upper_bound), ...]}. The state is the value that is
+                assigned to the pixel if the color matches the threshold. If a pixel doesn't match
+                any of the thresholds, it is assigned the value UNMATCHED. If a pixel matches
+                multiple thresholds, the state with the closest expected value to the pixel's
+                expected value assigned to the pixel.
+
 
         Returns:
             ImgGray: The image with the colors matched to the states.
@@ -397,11 +401,25 @@ def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor,
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
     matched_img = np.full(np.shape(hsv_img)[:2], UNMATCHED, np.uint8)
     total_mask = np.zeros(np.shape(hsv_img)[:2], bool)
-    for state, (lower_bound, upper_bound) in color_thresh_dict.items():
-        mask = cv.inRange(hsv_img, lower_bound, upper_bound)
+    for state, bounds in color_thresh_dict.items():
+        # mask = cv.inRange(hsv_img, lower_bound, upper_bound)
+        mask = np.bitwise_or.reduce([cv.inRange(hsv_img, lower_bound, upper_bound)
+                                     for lower_bound, upper_bound in bounds])
         cv.imshow('debug{}'.format(state), mask); cv.waitKey(0); cv.destroyWindow('debug{}'.format(state))
         mask = mask.astype(bool)
-        matched_img[mask] = state
+        matched_img[mask & ~total_mask] = state
+        colliding_mask = np.bitwise_and(mask, total_mask)
+        real_values = hsv_img[colliding_mask][:, 2]
+        expected_values_for_prev_matched = np.zeros_like(real_values)
+        for prev_state in color_thresh_dict:
+            if prev_state == state: continue
+            expected_values_for_prev_matched[matched_img[colliding_mask] == prev_state] \
+                = expected_state_values[prev_state]
+        matched_img[colliding_mask] = np.where(
+            (np.abs(real_values - expected_state_values[state])
+             < np.abs(real_values - expected_values_for_prev_matched)),
+            state,
+            matched_img[mask & total_mask])
         total_mask |= mask
     # // cv.imshow('debug all', total_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('debug all')
 
@@ -424,9 +442,22 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
 
     thresholds_high = state_thresholds(color_mode, 100)
     thresholds_low = state_thresholds(color_mode, 50)
-    thresholds = {UNCLICKED: (thresholds_low[UNCLICKED][0], thresholds_high[UNCLICKED][1]),
-                  EMPTY: (thresholds_low[EMPTY][0], thresholds_high[EMPTY][1])}
-    matched_img = match_colors(img, thresholds)
+    real_max_colors = state_thresholds(color_mode, 100, no_thresholds=True)
+    expected_state_values = {state: real_max_colors[state][0][0][2] for state in real_max_colors}
+
+    thresholds: Thresholds = {}
+    for state in (UNCLICKED, EMPTY):
+        sat_low, sat_high = thresholds_low[state][0][0][1], thresholds_low[state][0][1][1]
+        val_low, val_high = thresholds_low[state][0][0][2], thresholds_high[state][0][1][2]
+        if len(thresholds_low[state]) == 1:
+            hue_low, hue_high = thresholds_low[state][0][0][0], thresholds_low[state][0][1][0]
+            thresholds[state] = (((hue_low, sat_low, val_low), (hue_high, sat_high, val_high)),)
+        else:
+            hue_low1, hue_high1 = thresholds_low[state][0][0][0], thresholds_low[state][0][1][0]
+            hue_low2, hue_high2 = thresholds_low[state][1][0][0], thresholds_low[state][1][1][0]
+            thresholds[state] = (((hue_low1, sat_low, val_low), (hue_high1, sat_high, val_high)),
+                                 ((hue_low2, sat_low, val_low), (hue_high2, sat_high, val_high)))
+    matched_img = match_colors(img, thresholds, expected_state_values)
     unclicked_mask = matched_img == UNCLICKED
     empty_mask = matched_img == EMPTY
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
@@ -437,18 +468,18 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
     cv.imshow('empty', empty_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('empty')
     # debug end
 
-    real_max_colors = state_thresholds(color_mode, 100, no_thresholds=True)
-    MASK_THRESHOLD = .2
+    MASK_THRESHOLD = .25
     if np.mean(unclicked_mask) > MASK_THRESHOLD:
         unclicked_median_value = np.median(hsv_img[unclicked_mask][:, 2])
     else:
         unclicked_median_value = -1
-    unclicked_brightness = unclicked_median_value / real_max_colors[UNCLICKED][1][2]
+    unclicked_brightness = unclicked_median_value / real_max_colors[UNCLICKED][0][1][2]
     if np.mean(empty_mask) > MASK_THRESHOLD:
         empty_median_value = np.median(hsv_img[empty_mask][:, 2])
     else:
         empty_median_value = -1
-    empty_brightness = empty_median_value / real_max_colors[EMPTY][1][2]
+    empty_brightness = empty_median_value / real_max_colors[EMPTY][0][1][2]
+    print(np.mean(unclicked_mask), np.mean(empty_mask), unclicked_brightness, empty_brightness) # DEBUG
 
     if unclicked_brightness < 0 and empty_brightness < 0:
         raise ValueError('Not enough unclicked or empty tiles found')
@@ -487,7 +518,10 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
         ] for r in range(n_rows)
     ]
 
-    matched: ImgGray = match_colors(img, state_thresholds(color_mode, brightness))
+    expected_colors = state_thresholds(color_mode, brightness, no_thresholds=True)
+    expected_state_values = {state: expected_colors[state][0][0][2] for state in expected_colors}
+    matched: ImgGray = match_colors(img, state_thresholds(color_mode, brightness),
+                                    expected_state_values)
     cv.imshow('dbg', matched); cv.waitKey(0); cv.destroyWindow('dbg') # debug
 
     STATE_THRESHOLD = 0.1
