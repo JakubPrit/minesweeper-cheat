@@ -12,6 +12,17 @@ from math import isclose
 #                  TYPE DEFINITIONS AND CONSTANTS                 #
 ###################################################################
 
+WINDOW_NAME = 'Minesweeper Cheat'
+MAX_FPS = 5
+NONE_RECT = ((-1, -1), (-1, -1))
+BLACK = (0, 0, 0)
+RED = (0, 0, 255)
+EMPTY = 0
+UNCLICKED = 9
+FLAGGED = 10
+UNMATCHED = 255
+
+
 Pos = tp.Tuple[int, int]
 Rect = tp.Tuple[Pos, Pos]
 ImgGray = np.ndarray
@@ -19,19 +30,8 @@ ImgBGR = np.ndarray
 ImgHSV = np.ndarray
 ImgBool = np.ndarray
 HSVColor = tp.Tuple[int, int, int]
-
-
-WINDOW_NAME = 'Minesweeper Cheat'
-MAX_FPS = 5
-NONE_RECT = ((-1, -1), (-1, -1))
-BLACK = (0, 0, 0)
-RED = (0, 0, 255)
-
-
-EMPTY = 0
-UNCLICKED = 9
-FLAGGED = 10
-UNMATCHED = 255
+TileState = int
+Uint8_2D = np.ndarray
 
 
 # HSV input format: hue in [0, 360], saturation in [0, 100], value in [0, 100]
@@ -86,6 +86,10 @@ class ColorMode(Enum):
     UNKNOWN = 3
 
 
+###################################################################
+#                  MINESWEEPER STATE RECOGNITION                  #
+###################################################################
+
 def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thresholds
                          ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
@@ -134,10 +138,6 @@ def state_thresholds(color_mode: ColorMode, brightness: int,
     else:
         raise ValueError('{} is not supported'.format(color_mode))
 
-
-###################################################################
-#                  MINESWEEPER STATE RECOGNITION                  #
-###################################################################
 
 def find_minefield(screen: ImgBGR) -> Rect:
     """ Find the minefield in the screen image by detecting the largest rectangle.
@@ -355,7 +355,7 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         return [], [], -1 # Not enough suitable edges found
 
     median_diff = np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)]))
-    return sorted_x, sorted_y, int(median_diff)
+    return list(sorted_x), list(sorted_y), int(median_diff)
 
 
 def match_colors(img: ImgBGR, color_thresh_dict: tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]
@@ -448,13 +448,42 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
             tp.List[tp.List[TileState]]: The states of the tiles.
     """
 
+    x = vertical_lines + [vertical_lines[-1] + tile_size]
+    y = horizontal_lines + [horizontal_lines[-1] + tile_size]
+    n_cols, n_rows = len(vertical_lines), len(horizontal_lines)
+    print(n_cols, n_rows, len(x), len(y)) # DEBUG
+    grid: Uint8_2D = np.ndarray((n_rows, n_cols), np.uint8)
+    rect_grid = [
+        [
+            ((x[c], y[r]), (x[c+1], y[r+1])) for c in range(n_cols)
+        ] for r in range(n_rows)
+    ]
 
-    # DEBUG
-    dbg_img = match_colors(img, state_thresholds(color_mode, brightness))
-    cv.imshow('dbg', dbg_img)
-    cv.waitKey(0)
-    cv.destroyWindow('dbg')
-    return [[]]
+    matched: ImgGray = match_colors(img, state_thresholds(color_mode, brightness))
+    cv.imshow('dbg', matched); cv.waitKey(0); cv.destroyWindow('dbg') # debug
+
+    STATE_THRESHOLD = 0.1
+    for r in range(n_rows):
+        for c in range(n_cols):
+            (left, top), (right, bottom) = rect_grid[r][c]
+            tile = matched[top:bottom, left:right]
+            # get counts of each state
+            counts = np.bincount(tile.flatten(), minlength=256)
+            state = (np.argmax(counts[1:9]) + 1
+                     if np.max(counts[1:9]) > STATE_THRESHOLD * ((right - left) * (bottom - top))
+                     else np.argmax(counts))
+            grid[r, c] = state
+
+    # debug
+    print(rect_grid) # DEBUG
+    print(x, y) # DEBUG
+    dbg_img = img.copy()
+    for r in range(n_rows):
+        for c in range(n_cols):
+            pos = (rect_grid[r][c][0][0] + int(tile_size / 5), rect_grid[r][c][0][1] + int(tile_size * 0.8))
+            cv.putText(dbg_img, str(grid[r, c]), pos, cv.FONT_HERSHEY_SIMPLEX, 0.5, RED, 2)
+    cv.imshow('dbg', dbg_img); cv.waitKey(0); cv.destroyWindow('dbg')
+    # debug end
 
     raise NotImplementedError
 
@@ -599,14 +628,12 @@ class Minesweeper:
                 screen = self.get_screen(mask_window=True)
             else:
                 screen = self.get_screen(self.minefield_rect_global)
-                self.draw_debug_grid(screen)
+                self.draw_debug_grid(screen) # debug
                 detect_tiles_states(screen, self.vertical_lines, self.horizontal_lines,
-                                    self.tile_size, self.color_mode, 100) # debug brightness
+                                    self.tile_size, self.color_mode, self.brightness)
 
             # Show the screen
             cv.imshow(WINDOW_NAME, screen)
-
-            # TODO: Detect game state
 
             # Limit the frame rate and handle user input
             curr_time = time_ns()
