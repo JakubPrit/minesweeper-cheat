@@ -31,6 +31,7 @@ ImgBool = np.ndarray
 HSVColor = tp.Tuple[int, int, int]
 TileState = int
 Uint8_2D = np.ndarray
+Thresholds = tp.Dict[int, tp.Tuple[tp.Tuple[HSVColor, HSVColor], ...]]
 
 
 # HSV input format: hue in [0, 360], saturation in [0, 100], value in [0, 100]
@@ -90,7 +91,7 @@ class ColorMode(Enum):
 ###################################################################
 
 def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thresholds
-                         ) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
+                         ) -> Thresholds:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
     HUE_THRESHOLD = 10
@@ -99,24 +100,29 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int, no_thr
     if no_thresholds:
         HUE_THRESHOLD = SATURATION_THRESHOLD = VALUE_THRESHOLD = 0
 
-    return {
-        key: (
-            (
-                max(0, (color[0] // 2) - HUE_THRESHOLD),
-                max(0, (color[1] * 255 // 100) - SATURATION_THRESHOLD),
-                max(0, (color[2] * 255 // 100) * brightness // 100 - VALUE_THRESHOLD)
-            ), (
-                min(180, (color[0] // 2) + HUE_THRESHOLD),
-                min(255, (color[1] * 255 // 100) + SATURATION_THRESHOLD),
-                min(255, (color[2] * 255 // 100) * brightness // 100 + VALUE_THRESHOLD)
-            )
-        )
-        for key, color in colors.items()
-    }
+    thresholds: Thresholds = {}
+    for key, color in colors.items():
+        hue = color[0] // 2
+        hue_low: int = (hue - HUE_THRESHOLD) % 180
+        hue_high: int = (hue + HUE_THRESHOLD) % 180
+        sat = int(color[1] * 2.55)
+        sat_low: int = max(0, sat - SATURATION_THRESHOLD)
+        sat_high: int = min(255, sat + SATURATION_THRESHOLD)
+        val = int(color[2] * 2.55 * brightness / 100)
+        val_low: int = max(0, val - VALUE_THRESHOLD)
+        val_high: int = min(255, val + VALUE_THRESHOLD)
+
+        if hue_low < hue_high:
+            thresholds[key] = (((hue_low, sat_low, val_low), (hue_high, sat_high, val_high)),)
+        else:
+            thresholds[key] = (((0, sat_low, val_low), (hue_high, sat_high, val_high)),
+                                ((hue_low, sat_low, val_low), (180, sat_high, val_high)))
+
+    return thresholds
 
 
 def state_thresholds(color_mode: ColorMode, brightness: int,
-                     no_thresholds: bool = False) -> tp.Dict[int, tp.Tuple[HSVColor, HSVColor]]:
+                     no_thresholds: bool = False) -> Thresholds:
     """ Get the color thresholds for the states of the tiles in the minefield
         for the given color mode and brightness.
 
@@ -424,6 +430,12 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode) -> int:
     unclicked_mask = matched_img == UNCLICKED
     empty_mask = matched_img == EMPTY
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+
+    # debug
+    print(thresholds)
+    cv.imshow('unclicked', unclicked_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('unclicked')
+    cv.imshow('empty', empty_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('empty')
+    # debug end
 
     real_max_colors = state_thresholds(color_mode, 100, no_thresholds=True)
     MASK_THRESHOLD = .2
