@@ -5,7 +5,6 @@ import typing as tp
 from time import time_ns
 from scipy.stats import mode # type: ignore
 from enum import Enum
-from math import isclose
 
 
 ###################################################################
@@ -37,7 +36,7 @@ Uint8_2D = np.ndarray
 # HSV input format: hue in [0, 360], saturation in [0, 100], value in [0, 100]
 LIGHT_MODE_STATE_HSV_COLORS = {
     0: (0, 0, 78),
-    1: (240, 100, 100),
+    1: (240, 100, 97),
     2: (120, 100, 47),
     3: (0, 100, 93),
     4: (240, 100, 50),
@@ -149,8 +148,15 @@ def find_minefield(screen: ImgBGR) -> Rect:
             Rect: The rectangle of the minefield in the form ((left, top), (right, bottom)).
     """
 
-    edges = cv.Canny(screen, 100, 200)
+    edges = cv.Canny(screen, 50, 150)
     contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+
+    # debug
+    # cv.imshow('edges', edges); cv.waitKey(0); cv.destroyWindow('edges')
+    # screen_copy = screen.copy()
+    # cv.drawContours(screen_copy, contours, -1, RED, 2)
+    # cv.imshow('contours', screen_copy); cv.waitKey(0); cv.destroyWindow('contours')
+    # debug end
 
     minefield_area = 0
     best_rect = ((0, 0), (0, 0))
@@ -308,10 +314,20 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1)
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2)
         edges = hit_or_miss1 | hit_or_miss2
-    # // cv.imshow('edges', edges.astype(np.uint8)*255); cv.waitKey(0); cv.destroyWindow('edges') #debug
+
+    # debug
+    # cv.imshow('edges', edges.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('edges')
+    # debug end
 
     MIN_REL_SIZE, MAX_REL_SIZE = 0.7, 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
+
+    # debug
+    # img_copy = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
+    # cv.drawContours(img_copy, cnts, -1, RED, 2)
+    # cv.imshow('contours', img_copy); cv.waitKey(0); cv.destroyWindow('contours')
+    # debug end
+
     edges_x, edges_y, sizes = [], [], []
     for cnt in cnts:
         x, y, w, h = cv.boundingRect(cnt)
@@ -331,7 +347,7 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough edges found
 
-    SAME_THRESHOLD = 0.3
+    SAME_THRESHOLD = 0.25
     sorted_x = sorted_x[np.diff(sorted_x, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
     sorted_y = sorted_y[np.diff(sorted_y, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
 
@@ -346,10 +362,10 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         sorted_x = sorted_x[1:]
     while len(sorted_y) > 1 and not (min_size <= (sorted_y[1] - sorted_y[0]) <= max_size):
         sorted_y = sorted_y[1:]
-    while len(sorted_x) > 1 and sorted_x[0] < (CLOSE_THRESHOLD * median_diff):
-        sorted_x = sorted_x[1:]
-    while len(sorted_y) > 1 and sorted_y[0] < (CLOSE_THRESHOLD * median_diff):
-        sorted_y = sorted_y[1:]
+    # while len(sorted_x) > 1 and sorted_x[0] < (CLOSE_THRESHOLD * median_diff):
+    #     sorted_x = sorted_x[1:]
+    # while len(sorted_y) > 1 and sorted_y[0] < (CLOSE_THRESHOLD * median_diff):
+    #     sorted_y = sorted_y[1:]
 
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough suitable edges found
@@ -451,7 +467,7 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
     x = vertical_lines + [vertical_lines[-1] + tile_size]
     y = horizontal_lines + [horizontal_lines[-1] + tile_size]
     n_cols, n_rows = len(vertical_lines), len(horizontal_lines)
-    print(n_cols, n_rows, len(x), len(y)) # DEBUG
+    # print(n_cols, n_rows, len(x), len(y)) # DEBUG
     grid: Uint8_2D = np.ndarray((n_rows, n_cols), np.uint8)
     rect_grid = [
         [
@@ -475,8 +491,8 @@ def detect_tiles_states(img: ImgBGR, vertical_lines: tp.List[int], horizontal_li
             grid[r, c] = state
 
     # debug
-    print(rect_grid) # DEBUG
-    print(x, y) # DEBUG
+    # print(rect_grid) # DEBUG
+    # print(x, y) # DEBUG
     dbg_img = img.copy()
     for r in range(n_rows):
         for c in range(n_cols):
@@ -575,12 +591,6 @@ class Minesweeper:
 
         screen: ImgBGR = self.get_screen(self.selected_rect)
 
-        # Find the color mode and the brightness of the screen
-        self.color_mode = detect_color_mode(screen)
-        print(self.color_mode) # DEBUG
-        self.brightness = get_brightness(screen, self.color_mode)
-        print(self.brightness)
-
         # Find the minefield in the selection
         self.minefield_rect_in_selection = find_minefield(screen)
         (s_left, s_top), (s_right, s_bottom) = self.selected_rect
@@ -589,6 +599,12 @@ class Minesweeper:
                                       (s_left + m_right, s_top + m_bottom))
 
         screen = self.get_screen(self.minefield_rect_global)
+
+        # Find the color mode and the brightness of the screen
+        self.color_mode = detect_color_mode(screen)
+        print(self.color_mode) # DEBUG
+        self.brightness = get_brightness(screen, self.color_mode)
+        print(self.brightness)
 
         # Find the grid of tiles
         self.vertical_lines, self.horizontal_lines, self.tile_size \
