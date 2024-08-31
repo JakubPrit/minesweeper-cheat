@@ -3,7 +3,6 @@ import numpy as np
 import pyautogui
 import typing as tp
 from time import time_ns
-from scipy.stats import mode # type: ignore
 from enum import Enum
 
 
@@ -500,7 +499,7 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode, guess: int) -> int:
     # // cv.imshow('empty', empty_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('empty')
     # // # debug block end
 
-    MASK_THRESHOLD = .2
+    MASK_THRESHOLD = .1
     if np.mean(unclicked_mask) > MASK_THRESHOLD:
         unclicked_median_value = np.median(hsv_img[unclicked_mask][:, 2])
     else:
@@ -523,7 +522,6 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode, guess: int) -> int:
                                (unclicked_brightness, empty_brightness)
                                if brightness > 0])
     )) * 100)
-    # // print(brightness) # DEBUG
     return brightness
 
 
@@ -552,28 +550,6 @@ def detect_tiles_states(img: ImgBGR, rect_grid: RectGrid, color_mode: ColorMode,
     # only flagged tiles have a majority of unmatched pixels
     matched[matched == UNMATCHED] = FLAGGED
 
-    # mask out edges
-    # // gray_img = cv.cvtColor(extract_gray(img, color_mode), cv.COLOR_BGR2GRAY)
-    # // edges = detect_edges(gray_img, iterations=1).astype(np.uint8)
-    # // KERNEL1 = np.array([[1, 1, 1], [0, 0, 0], [0, 0, 0]], np.uint8)
-    # // KERNEL2 = np.array([[0, 0, 0], [0, 0, 0], [1, 1, 1]], np.uint8)
-    # // hit_or_miss = np.zeros_like(edges)
-    # // DILATION_REPS = 3
-    # // for _ in range(DILATION_REPS):
-    # //     for kernel in (KERNEL1, KERNEL1.T, KERNEL2, KERNEL2.T):
-    # //         hit_or_miss |= cv.morphologyEx(edges, cv.MORPH_HITMISS, kernel,
-    # //                                     borderType=cv.BORDER_CONSTANT, borderValue=255)
-    # //     edges |= hit_or_miss
-    # // edges = edges.astype(bool)
-    # // matched[edges] = UNCLICKED
-
-    # debug block start
-    # matched_dbg = matched.copy()
-    # matched_dbg[matched == UNCLICKED] = 11
-    # matched_dbg *= 23
-    # matched_dbg = cv.cvtColor(matched_dbg, cv.COLOR_GRAY2BGR)
-    # debug block end
-
     STATE_THRESHOLD = 0.1
     FLAGGED_THRESHOLD = 0.35
     REL_PADDING = 0.2
@@ -594,11 +570,6 @@ def detect_tiles_states(img: ImgBGR, rect_grid: RectGrid, color_mode: ColorMode,
             # if counts[FLAGGED] > FLAGGED_THRESHOLD * ((right - left) * (bottom - top)):
             #     state = FLAGGED # type: ignore
             grid[r, c] = state
-
-            # debug block start
-    #         cv.rectangle(matched_dbg, (left, top), (right, bottom), (0, int(state) * 23, 0), 1)
-    # cv.imshow('dbg', matched_dbg); cv.waitKey(0); cv.destroyWindow('dbg')
-    # debug block end
 
     return grid
 
@@ -741,7 +712,21 @@ class Minesweeper:
         left, top = self.rect_grid[0][0][0]
         right, bottom = self.rect_grid[-1][-1][1]
         grid_screen = screen[top:bottom, left:right]
-        return get_brightness(grid_screen, self.color_mode, self.brightness)
+
+        mask = np.zeros_like(screen, bool)
+        REL_PADDING = 0.2
+        for r in range(self.n_rows):
+            for c in range(self.n_cols):
+                (left, top), (right, bottom) = self.rect_grid[r][c]
+                width, height = right - left, bottom - top
+                top += int(REL_PADDING * height)
+                left += int(REL_PADDING * width)
+                bottom -= int(REL_PADDING * height)
+                right -= int(REL_PADDING * width)
+                mask[top:bottom, left:right] = True
+        screen[np.logical_not(mask)] = 0
+
+        return get_brightness(screen, self.color_mode, self.brightness)
 
 
     # Debug
