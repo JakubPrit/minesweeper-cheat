@@ -94,8 +94,8 @@ def colors_to_thresholds(colors: tp.Dict[int, HSVColor], brightness: int,
                          no_thresholds: bool, value_threshold: int) -> Thresholds:
     # Output HSV format: hue in [0, 180], saturation in [0, 255], value in [0, 255]
 
-    HUE_THRESHOLD = 10
-    SATURATION_THRESHOLD = 10
+    HUE_THRESHOLD = 2
+    SATURATION_THRESHOLD = 5
     VALUE_THRESHOLD = value_threshold
     if no_thresholds:
         HUE_THRESHOLD = SATURATION_THRESHOLD = VALUE_THRESHOLD = 0
@@ -163,13 +163,6 @@ def find_minefield(screen: ImgBGR) -> Rect:
 
     edges = cv.Canny(screen, 50, 150)
     contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-
-    # // debug block start
-    # // cv.imshow('edges', edges); cv.waitKey(0); cv.destroyWindow('edges')
-    # // screen_copy = screen.copy()
-    # // cv.drawContours(screen_copy, contours, -1, RED, 2)
-    # // cv.imshow('contours', screen_copy); cv.waitKey(0); cv.destroyWindow('contours')
-    # // debug block end
 
     minefield_area = 0
     best_rect = ((0, 0), (0, 0))
@@ -299,12 +292,17 @@ def detect_edges(img: ImgGray, iterations=1) -> ImgBool:
 
     KERNEL1 = np.array([[0, 0, 0], [1, 1, 1], [0, 0, 0]], np.uint8)
     KERNEL2 = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]], np.uint8)
-    HIT_OR_MISS_REPS = 1
+    BAD_KERNEL1 = np.array([[0, 1, 0], [0, 1, 0], [1, 1, 1]], np.uint8)
+    BAD_KERNEL2 = np.array([[0, 0, 1], [1, 1, 1], [0, 0, 1]], np.uint8)
+    HIT_OR_MISS_REPS = 2
     for _ in range(HIT_OR_MISS_REPS):
+        bad_hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, BAD_KERNEL1).astype(bool)
+        bad_hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, BAD_KERNEL2).astype(bool)
+        edges &= ~(bad_hit_or_miss1 | bad_hit_or_miss2)
         hit_or_miss1 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL1,
-                                       borderType=cv.BORDER_CONSTANT, borderValue=255)
+                                       borderType=cv.BORDER_CONSTANT, borderValue=255).astype(bool)
         hit_or_miss2 = cv.morphologyEx(edges.astype(np.uint8), cv.MORPH_HITMISS, KERNEL2,
-                                       borderType=cv.BORDER_CONSTANT, borderValue=255)
+                                       borderType=cv.BORDER_CONSTANT, borderValue=255).astype(bool)
         edges = hit_or_miss1 | hit_or_miss2
 
     larger = np.ones_like(img, bool)
@@ -329,18 +327,14 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
     """
 
     img = cv.cvtColor(extract_gray(img, color_mode), cv.COLOR_BGR2GRAY)
-    # // cv.imshow('pre edges', img); cv.waitKey(0); cv.destroyWindow('pre edges') #debug
     edges = detect_edges(img, iterations=2).astype(np.uint8) * 255
-    # // cv.imshow('edges', edges.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('edges') # debug
 
-    MIN_REL_SIZE, MAX_REL_SIZE = 0.7, 1.3
+    MIN_REL_SIZE, MAX_REL_SIZE = 0.9, 1.3
     cnts = cv.findContours(edges, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)[0]
 
-    # // debug block start
-    # // img_copy = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-    # // cv.drawContours(img_copy, cnts, -1, RED, 2)
-    # // cv.imshow('contours', img_copy); cv.waitKey(0); cv.destroyWindow('contours')
-    # // debug block end
+    dbg_img = cv.cvtColor(edges, cv.COLOR_GRAY2BGR)
+    # cv.drawContours(dbg_img, cnts, -1, RED, 1)
+    cv.imshow('d', dbg_img); cv.waitKey(0); cv.destroyWindow('d')
 
     edges_x, edges_y, sizes = [], [], []
     for cnt in cnts:
@@ -348,20 +342,28 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         if w > 1 and h > 1: continue
         if w > 1: sizes.append(w)
         if h > 1: sizes.append(h)
+
     median_size = np.median(sizes)
+    max_size = median_size * MAX_REL_SIZE
+
     min_size, max_size = median_size * MIN_REL_SIZE, median_size * MAX_REL_SIZE
+
+    dbg_img = cv.cvtColor(edges, cv.COLOR_GRAY2BGR)
+
     for cnt in cnts:
         x, y, w, h = cv.boundingRect(cnt)
-        if w > 1 and h > 1: continue
-        if min_size <= w <= max_size: edges_y.append(y)
-        if min_size <= h <= max_size: edges_x.append(x)
+        if w > 1 and h > 1: cv.drawContours(dbg_img, [cnt], -1, (255,0,0), 1); continue
+        if min_size <= w <= max_size: edges_y.append(y); cv.drawContours(dbg_img, [cnt], -1, RED, 1)
+        if min_size <= h <= max_size: edges_x.append(x); cv.drawContours(dbg_img, [cnt], -1, (0,255,0), 1)
+
+    cv.imshow('d', dbg_img); cv.waitKey(0); cv.destroyWindow('d')
 
     sorted_x = np.unique(edges_x)
     sorted_y = np.unique(edges_y)
     if len(sorted_x) < 2 or len(sorted_y) < 2:
         return [], [], -1 # Not enough edges found
 
-    SAME_THRESHOLD = 0.25
+    SAME_THRESHOLD = 0.35
     sorted_x = sorted_x[np.diff(sorted_x, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
     sorted_y = sorted_y[np.diff(sorted_y, prepend=-median_size) > (SAME_THRESHOLD * median_size)]
 
@@ -381,6 +383,11 @@ def detect_tiles_grid(img: ImgBGR, color_mode: ColorMode
         return [], [], -1 # Not enough suitable edges found
 
     median_diff = int(np.median(np.concatenate([np.diff(sorted_x), np.diff(sorted_y)])))
+
+    if sorted_x[-1] + median_diff > np.shape(img)[1]:
+        sorted_x = sorted_x[:-1]
+    if sorted_y[-1] + median_diff > np.shape(img)[0]:
+        sorted_y = sorted_y[:-1]
 
     GOOD_ENOUGH_THRESHOLD = 0.1
     good_enough_diff = median_diff * GOOD_ENOUGH_THRESHOLD
@@ -434,7 +441,6 @@ def match_colors(img: ImgBGR, color_thresh_dict: Thresholds,
         mask = np.bitwise_or.reduce([cv.inRange(hsv_img, lower_bound, upper_bound)
                                      for lower_bound, upper_bound in bounds])
         mask = mask.astype(bool)
-        # // cv.imshow('debug{}'.format(state), (mask & ~total_mask).astype(np.uint8)*255); cv.waitKey(0); cv.destroyWindow('debug{}'.format(state)) # debug
         matched_img[mask & ~total_mask] = state
         colliding_mask = np.bitwise_and(mask, total_mask)
         real_values = hsv_img[colliding_mask][:, 2]
@@ -449,7 +455,6 @@ def match_colors(img: ImgBGR, color_thresh_dict: Thresholds,
             state,
             matched_img[mask & total_mask])
         total_mask |= mask
-    # // cv.imshow('debug all', total_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('debug all')
 
     return matched_img
 
@@ -493,12 +498,6 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode, guess: int) -> int:
     empty_mask = matched_img == EMPTY
     hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
 
-    # // # debug block start
-    # // print(thresholds)
-    # // cv.imshow('unclicked', unclicked_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('unclicked')
-    # // cv.imshow('empty', empty_mask.astype(np.uint8) * 255); cv.waitKey(0); cv.destroyWindow('empty')
-    # // # debug block end
-
     MASK_THRESHOLD = .1
     if np.mean(unclicked_mask) > MASK_THRESHOLD:
         unclicked_median_value = np.median(hsv_img[unclicked_mask][:, 2])
@@ -510,12 +509,9 @@ def get_brightness(img: ImgBGR, color_mode: ColorMode, guess: int) -> int:
     else:
         empty_median_value = -1
     empty_brightness = empty_median_value / real_max_colors[EMPTY][0][1][2]
-    # // print(np.mean(unclicked_mask), np.mean(empty_mask), unclicked_brightness, empty_brightness) # DEBUG
 
     if unclicked_brightness < 0 and empty_brightness < 0:
-        dbg_img = (unclicked_mask | empty_mask).astype(np.uint8) * 255 # DEBUG
-        cv.imshow('dbg', dbg_img); cv.waitKey(0); cv.destroyWindow('dbg') # DEBUG
-        raise ValueError('Not enough unclicked or empty tiles found')
+        print('ERROR: Failed to detect brightness')
 
     brightness = int(max(0, min(1,
                       np.mean([brightness for brightness in
@@ -550,25 +546,56 @@ def detect_tiles_states(img: ImgBGR, rect_grid: RectGrid, color_mode: ColorMode,
     # only flagged tiles have a majority of unmatched pixels
     matched[matched == UNMATCHED] = FLAGGED
 
-    STATE_THRESHOLD = 0.1
-    FLAGGED_THRESHOLD = 0.35
+    STATE_THRESHOLD = 0.2
+    FLAGGED_THRESHOLD = 0.15
+    MIN_MIN_HALF_OVER_MAX = 0.1
     REL_PADDING = 0.2
     for r in range(n_rows):
         for c in range(n_cols):
+            # Crop to the tile and keep both the full tile and the inner part of the tile
             (left, top), (right, bottom) = rect_grid[r][c]
             width, height = right - left, bottom - top
+            full_tile = matched[top:bottom, left:right]
+            full_size = width * height
             top += int(REL_PADDING * height)
             left += int(REL_PADDING * width)
             bottom -= int(REL_PADDING * height)
             right -= int(REL_PADDING * width)
+            width, height = right - left, bottom - top
             tile = matched[top:bottom, left:right]
-            # get counts of each state
+            size = width * height
+
+            # Get counts of each state in the inner part of the tile
             counts = np.bincount(tile.flatten(), minlength=256)
-            state = (np.argmax(counts[1:9]) + 1
-                     if np.max(counts[1:9]) > STATE_THRESHOLD * ((right - left) * (bottom - top))
+
+            # If enough pixels are matched to a number, set the state to that number
+            state = int(np.argmax(counts[1:9]) + 1
+                     if np.max(counts[1:9]) > STATE_THRESHOLD * size
                      else np.argmax(counts[:UNMATCHED]))
-            # if counts[FLAGGED] > FLAGGED_THRESHOLD * ((right - left) * (bottom - top)):
-            #     state = FLAGGED # type: ignore
+
+            # If enough pixels are possibly flagged and no number was found, consider it flagged
+            if counts[FLAGGED] > FLAGGED_THRESHOLD * size and not (0 < state < 9):
+                state = FLAGGED
+
+            # If the halves of the tile have different states, consider it flagged
+            up_half = np.mean(tile[:height//2] == state)
+            down_half = np.mean(tile[height//2:] == state)
+            if min(up_half, down_half) < MIN_MIN_HALF_OVER_MAX * max(up_half, down_half):
+                state = FLAGGED
+
+            EMPTY_BORDER_THRESHOLD = 0.5
+            if color_mode == ColorMode.LIGHT:
+                # Determine if the tile is empty or unclicked based on its border
+                if state in (0, 9):
+                    full_zeros = np.count_nonzero(full_tile == 0)
+                    inner_zeros = counts[0]
+                    border_zeros = full_zeros - inner_zeros
+                    border_size = full_size - size
+                    if border_zeros > EMPTY_BORDER_THRESHOLD * border_size:
+                        state = 0
+                    else:
+                        state = 9
+
             grid[r, c] = state
 
     return grid
@@ -673,7 +700,6 @@ class Minesweeper:
 
         # Detect the color mode
         self.color_mode = detect_color_mode(screen)
-        print(self.color_mode) # DEBUG
 
         # Find the grid of tiles
         self.vertical_lines, self.horizontal_lines, self.tile_size \
@@ -709,11 +735,9 @@ class Minesweeper:
             int: The brightness of the grid of tiles.
         """
 
-        left, top = self.rect_grid[0][0][0]
-        right, bottom = self.rect_grid[-1][-1][1]
-        grid_screen = screen[top:bottom, left:right]
+        grid_screen = screen.copy()
 
-        mask = np.zeros_like(screen, bool)
+        mask = np.zeros_like(grid_screen, bool)
         REL_PADDING = 0.2
         for r in range(self.n_rows):
             for c in range(self.n_cols):
@@ -724,12 +748,15 @@ class Minesweeper:
                 bottom -= int(REL_PADDING * height)
                 right -= int(REL_PADDING * width)
                 mask[top:bottom, left:right] = True
-        screen[np.logical_not(mask)] = 0
+        grid_screen[np.logical_not(mask)] = 0
 
-        return get_brightness(screen, self.color_mode, self.brightness)
+        left, top = self.rect_grid[0][0][0]
+        right, bottom = self.rect_grid[-1][-1][1]
+        grid_screen = screen[top:bottom, left:right]
+
+        return get_brightness(grid_screen, self.color_mode, self.brightness)
 
 
-    # Debug
     def draw_debug_grid(self, screen: ImgBGR):
         """ Draw the detected grid of tiles on the screen image for debugging purposes.
 
@@ -788,4 +815,14 @@ class Minesweeper:
 
 
 if __name__ == '__main__':
+    print(
+        'Welcome to Minesweeper Cheat!\n'
+        '1. Click and drag to select the minefield area.\n'
+        '2. Press "r" to reset the selection.\n'
+        '3. Press "q" to quit.\n'
+        'If the game state is not detected properly, try adjusting the brightness \
+         (potentially adjusting it to the original state in small steps) \
+         or the zoom level of the game, or try reselecting the minefield area.\n'
+        'Low resolution mode may work, but also may not, especially with low zoom levels.\n'
+    )
     Minesweeper()
